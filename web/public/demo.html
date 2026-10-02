@@ -114,7 +114,9 @@ const params = new URLSearchParams(location.search);
 if (backends.length === 1) params.set("backend", backends[0]);
 else if (!params.has("backend")) {
   const adapter = await navigator.gpu?.requestAdapter();
-  params.set("backend", adapter?.features.has("chromium-experimental-subgroup-matrix") ? "engine" : "ort");
+  const { engineProblems } = await import("./engine/engine.js");
+  const fast = adapter && !engineProblems(adapter).length && adapter.features.has("chromium-experimental-subgroup-matrix");
+  params.set("backend", fast ? "engine" : "ort");
 }
 history.replaceState(null, "", `?${params}`);
 const backend = params.get("backend");

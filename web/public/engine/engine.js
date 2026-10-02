@@ -21,12 +21,24 @@ function matmulKernel(M, force = null, sgm = true) {
   return { key: `v4_${TM}_${SK}`, code: () => W.kernelV4({ TM, SK, KB: 2 }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK };
 }
 
+/**
+ * Why `adapter` cannot run the engine (empty if it can). The WGSL assumes 32-wide subgroups (one lane per 4 key dims
+ * in the gated-delta kernel, 8 subgroups per 256-thread norm), so an adapter that may pick another size is refused.
+ */
+export function engineProblems(adapter) {
+  const p = [];
+  for (const f of ["shader-f16", "subgroups"]) if (!adapter.features.has(f)) p.push(`no ${f}`);
+  const { subgroupMinSize: lo, subgroupMaxSize: hi } = adapter.info ?? {};
+  if (lo !== 32 || hi !== 32) p.push(`subgroup size ${lo ?? "?"}-${hi ?? "?"} (needs exactly 32)`);
+  return p;
+}
+
 export class Engine {
   static async create(base = "/engine-weights", { onProgress = () => {}, fetchShard } = {}) {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-    const need = ["shader-f16", "subgroups"], missing = need.filter((f) => !adapter.features.has(f));
-    if (missing.length) throw new Error(`WebGPU adapter lacks ${missing.join(", ")}, which the engine requires`);
-    const want = [...need, "chromium-experimental-subgroup-matrix", "timestamp-query"];
+    const problems = engineProblems(adapter);
+    if (problems.length) throw new Error(`this GPU can't run the WebGPU engine: ${problems.join(", ")}`);
+    const want = ["shader-f16", "subgroups", "chromium-experimental-subgroup-matrix", "timestamp-query"];
     const device = await adapter.requestDevice({
       requiredFeatures: want.filter((f) => adapter.features.has(f)),
       requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,

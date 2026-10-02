@@ -34,6 +34,7 @@ for (const [chrome, args] of Object.entries(CHROME)) {
         expect(await page.evaluate(() => document.body.dataset.ready), await page.textContent("#p-status")).toBe("1");
         const info = await page.evaluate(() => window.decider.info);
         test.info().annotations.push({ type: "runtime", description: `${info.runtime} kernels=${info.kernels ?? "-"} load=${info.timings.total_load_ms.toFixed(0)}ms` });
+        if (backend === "engine") expect(info.kernels).toBe(chrome === "stock" ? "portable" : "subgroup-matrix");
 
         await page.waitForFunction(() => +(document.body.dataset.inferences || 0) >= 1, null, { timeout: 60_000 });
         await expect(page.getByTestId("answer")).toContainText("billing");
