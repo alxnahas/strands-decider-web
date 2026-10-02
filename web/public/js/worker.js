@@ -214,7 +214,11 @@ async function decideMany({ id, state, questions }) {
   post("result", { id, answers, tokens: sLen + built.reduce((n, [, b]) => n + b.ids.length - sLen, 0), timings: { prefix_ms: t1 - t0, per_question_ms: per, total_ms: performance.now() - t0 }, runtime });
 }
 
-self.onmessage = async ({ data }) => {
+// One request at a time: a handler awaits GPU work, and the next message would otherwise start mid-request.
+// ORT Web hangs on overlapping session.run calls, and both backends share their state caches.
+let queue = Promise.resolve();
+self.onmessage = ({ data }) => { queue = queue.then(() => handle(data)); };
+async function handle(data) {
   try {
     if (data.type === "init") await init(data);
     else if (data.type === "decide") await decide(data);
@@ -225,4 +229,4 @@ self.onmessage = async ({ data }) => {
       post("result", { id: data.id, bench: r });
     }
   } catch (e) { post("error", { id: data.id, error: String(e?.stack || e) }); }
-};
+}
