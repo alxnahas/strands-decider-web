@@ -1,0 +1,9 @@
+[
+ {"name": "payouts_team", "state": "Help! My payouts have been failing for 3 days!", "question": {"type": "choice", "instructions": "Which team should handle this?", "options": ["billing", "sales", "retail"]}},
+ {"name": "payouts_team_perm", "state": "Help! My payouts have been failing for 3 days!", "question": {"type": "choice", "instructions": "Which team should handle this?", "options": ["retail", "billing", "sales"]}},
+ {"name": "urgency_noul", "state": "Help! My payouts have been failing for 3 days!", "question": {"type": "noul", "instructions": "Does this convey urgency?"}},
+ {"name": "frustration_score", "state": "Help! My payouts have been failing for 3 days!", "question": {"type": "score", "instructions": "How frustrated is the writer?", "options": ["calm", "frustrated", "depressed"]}},
+ {"name": "zulu", "state": "sihamba ngokushesha", "question": {"type": "choice", "instructions": "What language is this phrase in?", "options": ["English", "Zulu", "Dutch"]}},
+ {"name": "strawberry", "state": "strawberry", "question": {"type": "noul", "instructions": "Are there three r's in this word?"}},
+ {"name": "ambiguous", "state": "ok", "question": {"type": "choice", "instructions": "What is the user's favourite colour?", "options": ["red", "green", "blue", "yellow"]}}
+]

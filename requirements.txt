@@ -1,0 +1,10 @@
+# Model conversion (convert/build.sh) and the Python reference (ref/). Versions used for the published results.
+torch==2.7.1
+transformers==5.17.0
+safetensors==0.8.0
+numpy==2.5.3
+onnx==1.23.1
+onnxruntime==1.30.0
+onnxruntime-genai==0.17.1
+huggingface_hub==1.33.0
+# ref/reference.py also needs the official package: pip install -e <clone of strands-agents/strands-decider>

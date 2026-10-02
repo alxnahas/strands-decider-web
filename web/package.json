@@ -1,0 +1,19 @@
+{
+  "name": "strands-decider-web",
+  "version": "1.0.0",
+  "description": "Strands Decider 2B running locally in the browser on WebGPU",
+  "scripts": {
+    "serve": "node server.mjs",
+    "test": "playwright test",
+    "build:pages": "node build-pages.mjs --out ../dist"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@huggingface/tokenizers": "^0.2.0",
+    "@playwright/test": "^1.63.0",
+    "onnxruntime-web": "^1.30.0",
+    "playwright": "^1.63.0"
+  },
+  "private": true
+}

@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>engine profile</title></head>
+<body><pre id="out">running…</pre><script type="module">
+import { Engine } from "./engine.js";
+const out = document.getElementById("out"); const log = (s) => { out.textContent += "\n" + s; console.log(s); };
+(async () => {
+  const eng = await Engine.create("/engine-weights");
+  for (const L of (new URLSearchParams(location.search).get("L") || "56,68,128,512,2048").split(",").map(Number)) {
+    const ids = Array.from({ length: L }, (_, i) => 1000 + i);
+    await eng.profile(ids); const p = await eng.profile(ids);
+    log(`L=${L} total ${Object.values(p).reduce((a, b) => a + b, 0).toFixed(1)} ${JSON.stringify(p)}`);
+  }
+  document.body.dataset.done = "1";
+})().catch((e) => { log("ERROR " + (e.stack || e)); document.body.dataset.done = "error"; });
+</script></body></html>

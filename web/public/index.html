@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<title>Strands Decider 2B — in-browser</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; max-width: 860px; margin: 24px auto; padding: 0 16px; color: #1b1f24; }
+  textarea, input { width: 100%; box-sizing: border-box; font: inherit; padding: 6px; }
+  label { display: block; margin-top: 10px; font-weight: 600; }
+  button { margin-top: 12px; padding: 6px 14px; font: inherit; }
+  #status { background: #f3f4f6; padding: 8px; border-radius: 6px; white-space: pre-wrap; font: 12px ui-monospace, monospace; }
+  table { border-collapse: collapse; margin-top: 8px; } td { padding: 2px 10px; } .bar { background: #3b82f6; height: 10px; }
+  .chosen { font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>Strands Decider 2B, running locally</h1>
+<p>v19 (LoRA merged into Qwen3.5-2B-Base, int4 ONNX) + pointer head, executed with ONNX Runtime Web in a worker. No inference API is called.</p>
+<div id="status" data-testid="status">starting…</div>
+<form id="form">
+  <label>State <textarea id="state" rows="3">Help! My payouts have been failing for 3 days!</textarea></label>
+  <label>Question <input id="question" value="Which team should handle this?"></label>
+  <label>Type
+    <select id="qtype"><option>choice</option><option>noul</option><option>score</option></select></label>
+  <label>Options (comma-separated) <input id="options" value="billing,sales,retail"></label>
+  <button id="ask" disabled>Decide</button>
+</form>
+<div id="result" data-testid="result"></div>
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+import { chromium } from "playwright";
+import fs from "node:fs";
+const ctx = await chromium.launchPersistentContext("/tmp/decider-chrome-profile", { channel: "chrome", headless: true, args: ["--enable-unsafe-webgpu"] });
+const page = await ctx.newPage(); const lines = [];
+page.on("console", (m) => lines.push(m.text()));
+await page.goto(`http://127.0.0.1:8787/?${process.env.QS || "profile=1"}`);
+await page.waitForFunction(() => document.body.dataset.ready, null, { timeout: 600000 });
+for (let i = 0; i < 3; i++) await page.evaluate(() => window.decider.decide("Help! My payouts have been failing for 3 days!", { type: "choice", instructions: "Which team should handle this?", options: ["billing", "sales", "retail"] }));
+await page.waitForTimeout(1000);
+fs.writeFileSync(process.env.OUT || "/tmp/profile.log", lines.join("\n")); console.log(lines.length, "lines");
+await ctx.close();

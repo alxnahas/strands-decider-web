@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Sandbox: ticket triage</title>
+<style>body{font:14px system-ui;max-width:640px;margin:24px auto} button{margin:4px;padding:6px 12px} .ticket{background:#f3f4f6;padding:10px;border-radius:6px} #banner{margin-top:12px;font-weight:700}</style></head>
+<body>
+<h1>Ticket triage (disposable test page)</h1>
+<p class="ticket" id="ticket"></p>
+<h2 id="step"></h2>
+<div id="actions"></div>
+<div id="banner" data-testid="banner"></div>
+<script>
+// A three-step workflow: route -> prioritise -> submit. Wrong route or discarding is an error state.
+const TICKETS = {
+  payouts: { text: "Help! My payouts have been failing for 3 days!", team: "billing" },
+  refund: { text: "I was charged twice for the same order, please refund one of them.", team: "billing" },
+  bulk: { text: "We want to buy 500 licenses for our company. Who can give us a quote?", team: "sales" },
+  vague: { text: "hello?", team: null },
+};
+const ticket = TICKETS[new URLSearchParams(location.search).get("ticket") || "payouts"];
+const state = { step: "route", team: null, priority: null };
+document.getElementById("ticket").textContent = ticket.text;
+const STEPS = {
+  route: { title: "Which team should own this ticket?", actions: [["assign-billing", "Assign to billing"], ["assign-sales", "Assign to sales"], ["assign-retail", "Assign to retail"]] },
+  priority: { title: "Set the priority", actions: [["priority-low", "Priority: low"], ["priority-normal", "Priority: normal"], ["priority-urgent", "Priority: urgent"]] },
+  submit: { title: "Review and submit", actions: [["submit", "Submit ticket"], ["discard", "Discard ticket"]] },
+};
+function act(id) {
+  if (id.startsWith("assign-")) {
+    state.team = id.slice(7);
+    if (ticket.team && state.team !== ticket.team) return finish("error", `Misrouted to ${state.team}`);
+    state.step = "priority";
+  } else if (id.startsWith("priority-")) { state.priority = id.slice(9); state.step = "submit"; }
+  else if (id === "submit") return finish("success", `Submitted: team=${state.team} priority=${state.priority}`);
+  else if (id === "discard") return finish("error", "Ticket discarded");
+  render();
+}
+function finish(kind, msg) { state.step = "done"; document.body.dataset.outcome = kind; document.getElementById("banner").textContent = `${kind.toUpperCase()}: ${msg}`; render(); }
+function render() {
+  const s = STEPS[state.step]; document.getElementById("step").textContent = s ? s.title : "Done";
+  const box = document.getElementById("actions"); box.innerHTML = "";
+  for (const [id, label] of s ? s.actions : []) {
+    const b = document.createElement("button"); b.dataset.action = id; b.textContent = label; b.onclick = () => act(id); box.appendChild(b);
+  }
+}
+render();
+</script>
+</body></html>

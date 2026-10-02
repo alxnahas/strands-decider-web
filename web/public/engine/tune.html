@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>engine tune</title></head>
+<body><pre id="out">running…</pre><script type="module">
+import { Engine } from "./engine.js";
+const out = document.getElementById("out"); const log = (s) => { out.textContent += "\n" + s; console.log(s); };
+(async () => {
+  const eng = await Engine.create("/engine-weights");
+  const Ls = (new URLSearchParams(location.search).get("L") || "12,24,40,48,56,68,80,96,112,128,160,192,256,384,512").split(",").map(Number);
+  const cands = [[0, 1], [16, 2], [16, 4], [16, 8], [32, 2], [32, 4], [32, 8], [64, 1], [64, 2], [64, 4], [64, 8]];
+  const table = {};
+  for (const L of Ls) {
+    const ids = Array.from({ length: L }, (_, i) => 1000 + i), res = [];
+    const t16 = Math.ceil(L / 16) * 16;
+    const cl = [...cands, ...(t16 <= 128 && ![16, 32, 64].includes(t16) ? [[t16, 1], [t16, 2], [t16, 4], [t16, 8]] : []), ...(L > 64 && L <= 256 ? [[128, 1], [128, 2], [128, 4]] : [])];
+    for (const c of cl) {
+      if (c[0] === 0 && L > 16) continue;
+      const t = [];
+      for (let i = 0; i < 3; i++) t.push((await eng.forward(ids, [L - 1], { timestamps: true, force: c })).gpu_ms);
+      res.push([c, Math.min(...t)]);
+      eng.plans.clear();
+    }
+    res.sort((a, b) => a[1] - b[1]); table[L] = res[0][0];
+    log(`L=${L} best ${JSON.stringify(res[0][0])} ${res[0][1].toFixed(1)}ms | ` + res.slice(1, 4).map(([c, t]) => `${c}:${t.toFixed(1)}`).join(" "));
+  }
+  log("TABLE " + JSON.stringify(table));
+  document.body.dataset.done = "1";
+})().catch((e) => { log("ERROR " + (e.stack || e)); document.body.dataset.done = "error"; });
+</script></body></html>

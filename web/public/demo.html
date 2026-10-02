@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<!-- build-pages.mjs rewrites these: where the model files live, and which backends this deployment ships. -->
+<meta name="decider-assets" content="">
+<meta name="decider-backends" content="engine ort">
+<title>Strands Decider 2B · in your browser</title>
+<style>
+  :root { --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --good: #3fb950; --warn: #d29922; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin: 0 0 20px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 13px; color: var(--dim); background: var(--panel); }
+  .pill b { color: var(--text); font-weight: 600; }
+  .pill.ok { border-color: #238636; } .pill.ok b { color: var(--good); }
+  #loadbar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin: -8px 0 20px; }
+  #loadbar div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .chip { cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; }
+  .chip:hover, .chip.on { border-color: var(--accent); color: var(--accent); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 10px 0 4px; }
+  label:first-child { margin-top: 0; }
+  textarea, input, select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  textarea { resize: vertical; min-height: 110px; }
+  textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; } .row > select { flex: 0 0 120px; }
+  .live { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--dim); font-size: 13px; }
+  .live input { width: auto; }
+  #answer { font-size: 26px; font-weight: 650; min-height: 40px; letter-spacing: -0.01em; }
+  #answer small { font-size: 14px; color: var(--dim); font-weight: 400; }
+  .bars { margin-top: 12px; }
+  .bar { display: grid; grid-template-columns: minmax(70px, 30%) 1fr 56px; align-items: center; gap: 10px; margin: 6px 0; font-size: 14px; }
+  .bar .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track { height: 10px; background: var(--bg); border-radius: 5px; overflow: hidden; }
+  .fill { height: 100%; width: 0; background: #30363d; border-radius: 5px; transition: width .25s ease, background .25s; }
+  .bar.top .fill { background: var(--accent); } .bar.top .name { color: var(--accent); font-weight: 600; }
+  .pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); }
+  .stats { display: flex; gap: 18px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+  #spark { display: flex; align-items: flex-end; gap: 2px; height: 36px; margin-top: 10px; }
+  #spark div { width: 6px; background: var(--accent); opacity: .7; border-radius: 2px 2px 0 0; }
+  .busy #answer { opacity: .55; }
+  footer { margin-top: 28px; color: var(--dim); font-size: 13px; }
+  footer a { color: var(--accent); }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Strands Decider 2B, <span>in your browser</span></h1>
+  <p class="sub">A 2B-parameter decision model (Qwen3.5 hybrid + pointer head) running entirely on your GPU. No server inference, no API calls. Edit anything and it re-decides as you type.</p>
+
+  <div class="pills">
+    <span class="pill" id="p-status">loading…</span>
+    <span class="pill" id="p-backend"></span>
+    <span class="pill" id="p-gpu"></span>
+    <span class="pill" id="p-load"></span>
+  </div>
+  <div id="loadbar"><div></div></div>
+
+  <div class="chips" id="examples"></div>
+
+  <div class="grid">
+    <div class="card">
+      <label for="state">State: what the model sees</label>
+      <textarea id="state"></textarea>
+      <label for="instructions">Question</label>
+      <input id="instructions">
+      <label for="options">Options <span id="opt-hint"></span></label>
+      <div class="row">
+        <select id="qtype"><option value="choice">choice</option><option value="noul">true/false</option><option value="score">score</option></select>
+        <input id="options">
+      </div>
+      <div class="live"><input type="checkbox" id="live" checked><span>Re-decide as you type</span>
+        <button class="chip" id="go" style="margin-left:auto">Decide</button></div>
+    </div>
+
+    <div class="card" id="out">
+      <label>Decision</label>
+      <div id="answer" data-testid="answer">…</div>
+      <div class="bars" id="bars"></div>
+      <div class="stats">
+        <span>forward <b id="s-fwd">–</b></span>
+        <span>tokens <b id="s-tok">–</b></span>
+        <span>decisions <b id="s-n">0</b></span>
+        <span id="s-cache-wrap" hidden>state cached <b id="s-cache"></b></span>
+      </div>
+      <div id="spark" title="forward latency, last 40 decisions"></div>
+    </div>
+  </div>
+
+  <footer>
+    Weights: <code>StrandsAgents/strands-decider-2B-hobson-v19</code> LoRA merged into <code>Qwen/Qwen3.5-2B-Base</code>, int4, cached in the browser's private storage (OPFS) after the first load.
+    <span id="backend-switch">Backend: <a id="other-backend" href="#"></a>.</span>
+  </footer>
+</main>
+
+<script type="module">
+// Default to the hand-written engine only where its fast matmul works (subgroup-matrix; stock Chrome exposes it
+// only behind --enable-unsafe-webgpu), otherwise ONNX Runtime Web. ?backend= overrides. The client forwards the query to the worker.
+const meta = (n) => document.querySelector(`meta[name=${n}]`).content;
+const backends = meta("decider-backends").split(/\s+/), assets = meta("decider-assets") || null;
+const params = new URLSearchParams(location.search);
+if (backends.length === 1) params.set("backend", backends[0]);
+else if (!params.has("backend")) {
+  const adapter = await navigator.gpu?.requestAdapter();
+  params.set("backend", adapter?.features.has("chromium-experimental-subgroup-matrix") ? "engine" : "ort");
+}
+history.replaceState(null, "", `?${params}`);
+const backend = params.get("backend");
+const { Decider } = await import("./js/decider-client.js");
+const $ = (id) => document.getElementById(id);
+
+const EXAMPLES = [
+  { name: "Route a ticket", state: "Help! My payouts have been failing for 3 days!", type: "choice", instructions: "Which team should handle this?", options: "billing, sales, retail" },
+  { name: "Urgent?", state: "Help! My payouts have been failing for 3 days!", type: "noul", instructions: "Does this convey urgency?", options: "" },
+  { name: "Frustration", state: "Help! My payouts have been failing for 3 days!", type: "score", instructions: "How frustrated is the writer?", options: "calm, frustrated, furious" },
+  { name: "Language ID", state: "sihamba ngokushesha", type: "choice", instructions: "What language is this phrase in?", options: "English, Zulu, Dutch" },
+  { name: "Agent: next action", type: "choice", instructions: "Which action should the agent take next?",
+    state: "Goal: submit a refund request for order #4417.\nPage: Refund form\n  [input] Order number: \"4417\"\n  [select] Reason: (not selected) options: damaged, late, wrong item\n  [textarea] Details: empty\n  [button] Submit (disabled until reason is selected)",
+    options: "click Submit, select a reason, type order number, ask the user for details" },
+  { name: "Phishing?", state: "URGENT: your account has been suspended. Verify your password at http://secure-login.example-bank.ru now.", type: "choice", instructions: "Is this email legitimate or phishing?", options: "legitimate, phishing" },
+  { name: "Sentiment", state: "Absolutely love the new design, checkout is so much faster now!", type: "choice", instructions: "What is the sentiment of this review?", options: "positive, neutral, negative" },
+];
+
+const hints = { choice: "(comma separated)", noul: "(none: answers true / false)", score: "(comma separated, low → high)" };
+function question() {
+  const type = $("qtype").value, options = $("options").value.split(",").map((s) => s.trim()).filter(Boolean);
+  return type === "noul" ? { type, instructions: $("instructions").value } : { type, instructions: $("instructions").value, options };
+}
+function load(ex, chip) {
+  $("state").value = ex.state; $("instructions").value = ex.instructions; $("qtype").value = ex.type; $("options").value = ex.options;
+  document.querySelectorAll(".chip.on").forEach((c) => c.classList.remove("on")); chip?.classList.add("on");
+  syncType(); schedule(0);
+}
+function syncType() { $("opt-hint").textContent = hints[$("qtype").value]; $("options").disabled = $("qtype").value === "noul"; }
+EXAMPLES.forEach((ex) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = ex.name; b.onclick = () => load(ex, b); $("examples").append(b); });
+
+$("p-backend").innerHTML = `backend <b>${backend === "engine" ? "hand-written WebGPU" : "ONNX Runtime Web"}</b>`;
+const other = new URLSearchParams(params); other.set("backend", backend === "engine" ? "ort" : "engine");
+$("backend-switch").hidden = backends.length === 1;
+$("other-backend").href = `?${other}`; $("other-backend").textContent = `switch to ${backend === "engine" ? "ONNX Runtime Web" : "the hand-written WebGPU engine"}`;
+
+const loaded = {};
+const decider = new Decider({ assets, onEvent: (e) => {
+  if (e.type === "progress" && e.total) {
+    loaded[e.label] = [e.got, e.total];
+    const [g, t] = Object.values(loaded).reduce(([a, b], [x, y]) => [a + x, b + y], [0, 0]);
+    $("loadbar").firstElementChild.style.width = `${(100 * g / t).toFixed(0)}%`;
+    $("p-status").innerHTML = `${e.cached ? "reading cache" : "downloading"} <b>${(g / 2 ** 20).toFixed(0)} MiB</b>`;
+  }
+  if (e.type === "status" && e.adapterInfo) $("p-gpu").innerHTML = `GPU <b>${[e.adapterInfo.vendor, e.adapterInfo.architecture].filter(Boolean).join(" ") || "unknown"}</b>`;
+}});
+window.decider = decider;
+if (!("gpu" in navigator)) $("p-gpu").innerHTML = "GPU <b>WebGPU unavailable</b>";
+
+decider.ready.then((r) => {
+  $("p-status").className = "pill ok"; $("p-status").innerHTML = "status <b>ready</b>";
+  $("p-load").innerHTML = `loaded in <b>${(r.timings.total_load_ms / 1000).toFixed(2)} s</b>${r.cached ? " from cache" : ""}`;
+  if (r.kernels === "portable") $("p-backend").innerHTML += ` · <span title="Chrome exposes subgroup-matrix only with --enable-unsafe-webgpu">portable matmul</span>`;
+  $("loadbar").style.visibility = "hidden"; document.body.dataset.ready = "1";
+  schedule(0);
+}, (e) => { $("p-status").innerHTML = `<b>load failed</b>: ${e.message}`; document.body.dataset.ready = "error"; });
+
+// One request in flight at a time; edits made while it runs collapse into a single follow-up decision.
+let busy = false, dirty = false, timer = 0, n = 0;
+const history_ = [];
+function schedule(ms = 40) { clearTimeout(timer); timer = setTimeout(run, ms); }
+async function run() {
+  if (document.body.dataset.ready !== "1") return;
+  if (busy) { dirty = true; return; }
+  busy = true; dirty = false; $("out").classList.add("busy");
+  try { render(await decider.decide($("state").value, question())); }
+  catch (e) { $("answer").innerHTML = `<small>${e.message.split("\n")[0]}</small>`; $("bars").innerHTML = ""; }
+  busy = false; $("out").classList.remove("busy");
+  if (dirty) run();
+}
+
+function render(r) {
+  const a = r.answer, probs = Object.entries(a.probabilities);
+  const top = a.type === "choice" ? a.choice : a.type === "noul" ? (a.noul >= 0.5 ? "true" : "false") : probs.reduce((m, p) => (p[1] > m[1] ? p : m))[0];
+  const labels = a.type === "score" ? question().options : null;
+  $("answer").innerHTML = a.type === "choice" ? `${a.choice} <small>confidence ${(a.confidence * 100).toFixed(0)}%</small>`
+    : a.type === "noul" ? `${a.noul >= 0.5 ? "true" : "false"} <small>P(true) = ${a.noul.toFixed(2)}</small>`
+    : `${a.score.toFixed(2)} <small>on 0–${probs.length - 1} · nearest “${labels[Math.round(a.score)] ?? ""}” · confidence ${(a.confidence * 100).toFixed(0)}%</small>`;
+  const rows = probs.map(([k, p]) => ({ k, p, name: labels ? `${k} · ${labels[+k]}` : k }));
+  const bars = $("bars");
+  if (bars.children.length !== rows.length || [...bars.children].some((el, i) => el.dataset.k !== rows[i].k)) {
+    bars.innerHTML = rows.map((r) => `<div class="bar" data-k="${r.k}"><span class="name"></span><div class="track"><div class="fill"></div></div><span class="pct"></span></div>`).join("");
+  }
+  rows.forEach((row, i) => {
+    const el = bars.children[i];
+    el.classList.toggle("top", row.k === top);
+    el.querySelector(".name").textContent = row.name;
+    el.querySelector(".fill").style.width = `${(row.p * 100).toFixed(1)}%`;
+    el.querySelector(".pct").textContent = `${(row.p * 100).toFixed(1)}%`;
+  });
+  $("s-fwd").textContent = `${r.timings.forward_ms.toFixed(0)} ms`;
+  $("s-tok").textContent = r.tokens;
+  $("s-n").textContent = ++n;
+  $("s-cache-wrap").hidden = !r.cached_state_tokens; $("s-cache").textContent = `${r.cached_state_tokens} tok`;
+  history_.push(r.timings.forward_ms); if (history_.length > 40) history_.shift();
+  const mx = Math.max(...history_, 1);
+  $("spark").innerHTML = history_.map((ms) => `<div style="height:${Math.max(2, (36 * ms) / mx).toFixed(0)}px" title="${ms.toFixed(0)} ms"></div>`).join("");
+  document.body.dataset.inferences = String(n);
+}
+
+for (const id of ["state", "instructions", "options"]) $(id).addEventListener("input", () => { if ($("live").checked) schedule(); });
+$("qtype").onchange = () => { syncType(); schedule(0); };
+$("go").onclick = () => schedule(0);
+load(EXAMPLES[0], $("examples").firstElementChild);
+</script>
+</body>
+</html>

@@ -1,0 +1,366 @@
+[
+ {
+  "name": "sent_pos",
+  "state": "This is the best doc I've ever read.",
+  "question": {
+   "type": "choice",
+   "instructions": "What is the sentiment?",
+   "options": [
+    "positive",
+    "negative",
+    "neutral"
+   ]
+  },
+  "label": "positive"
+ },
+ {
+  "name": "sent_neg",
+  "state": "The update broke everything and support never replied.",
+  "question": {
+   "type": "choice",
+   "instructions": "What is the sentiment?",
+   "options": [
+    "positive",
+    "negative",
+    "neutral"
+   ]
+  },
+  "label": "negative"
+ },
+ {
+  "name": "lang_fr",
+  "state": "Je voudrais un caf\u00e9, s'il vous pla\u00eet.",
+  "question": {
+   "type": "choice",
+   "instructions": "What language is this?",
+   "options": [
+    "English",
+    "French",
+    "German",
+    "Spanish"
+   ]
+  },
+  "label": "French"
+ },
+ {
+  "name": "lang_de",
+  "state": "Wo ist der Bahnhof?",
+  "question": {
+   "type": "choice",
+   "instructions": "What language is this?",
+   "options": [
+    "English",
+    "French",
+    "German",
+    "Spanish"
+   ]
+  },
+  "label": "German"
+ },
+ {
+  "name": "topic_sport",
+  "state": "The striker scored twice in the second half to secure the title.",
+  "question": {
+   "type": "choice",
+   "instructions": "What is the topic?",
+   "options": [
+    "sports",
+    "politics",
+    "technology",
+    "finance"
+   ]
+  },
+  "label": "sports"
+ },
+ {
+  "name": "topic_tech",
+  "state": "The new chip doubles inference throughput while halving power draw.",
+  "question": {
+   "type": "choice",
+   "instructions": "What is the topic?",
+   "options": [
+    "sports",
+    "politics",
+    "technology",
+    "finance"
+   ]
+  },
+  "label": "technology"
+ },
+ {
+  "name": "route_tech",
+  "state": "The app crashes every time I open the settings page.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle this?",
+   "options": [
+    "billing",
+    "technical support",
+    "sales"
+   ]
+  },
+  "label": "technical support"
+ },
+ {
+  "name": "route_sales",
+  "state": "Can I get a quote for 200 seats on the enterprise plan?",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle this?",
+   "options": [
+    "billing",
+    "technical support",
+    "sales"
+   ]
+  },
+  "label": "sales"
+ },
+ {
+  "name": "tool_weather",
+  "state": "User: will it rain in Seattle tomorrow?",
+  "question": {
+   "type": "choice",
+   "instructions": "Which tool should the agent call?",
+   "options": [
+    "get_weather",
+    "search_flights",
+    "send_email",
+    "calculator"
+   ]
+  },
+  "label": "get_weather"
+ },
+ {
+  "name": "tool_calc",
+  "state": "User: what is 17% of 2,340?",
+  "question": {
+   "type": "choice",
+   "instructions": "Which tool should the agent call?",
+   "options": [
+    "get_weather",
+    "search_flights",
+    "send_email",
+    "calculator"
+   ]
+  },
+  "label": "calculator"
+ },
+ {
+  "name": "tool_email",
+  "state": "User: let Dana know the meeting moved to 3pm.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which tool should the agent call?",
+   "options": [
+    "get_weather",
+    "search_flights",
+    "send_email",
+    "calculator"
+   ]
+  },
+  "label": "send_email"
+ },
+ {
+  "name": "intent_cancel",
+  "state": "I want to stop my subscription at the end of this month.",
+  "question": {
+   "type": "choice",
+   "instructions": "What does the user want?",
+   "options": [
+    "cancel subscription",
+    "upgrade plan",
+    "report a bug",
+    "change password"
+   ]
+  },
+  "label": "cancel subscription"
+ },
+ {
+  "name": "fact_paris",
+  "state": "Paris is the capital of France.",
+  "question": {
+   "type": "noul",
+   "instructions": "Is this statement true?"
+  },
+  "label": 1
+ },
+ {
+  "name": "fact_sun",
+  "state": "The sun orbits the earth once a day.",
+  "question": {
+   "type": "noul",
+   "instructions": "Is this statement true?"
+  },
+  "label": 0
+ },
+ {
+  "name": "pii",
+  "state": "My card number is 4111 1111 1111 1111, exp 04/29.",
+  "question": {
+   "type": "noul",
+   "instructions": "Does the text contain payment card details?"
+  },
+  "label": 1
+ },
+ {
+  "name": "no_pii",
+  "state": "The weather was lovely during our trip to Lisbon.",
+  "question": {
+   "type": "noul",
+   "instructions": "Does the text contain payment card details?"
+  },
+  "label": 0
+ },
+ {
+  "name": "guard_delete",
+  "state": {
+   "pending_action": "DELETE FROM users;",
+   "user_request": "show me the 10 newest users"
+  },
+  "question": {
+   "type": "noul",
+   "instructions": "Is the pending action consistent with the user's request?"
+  },
+  "label": 0
+ },
+ {
+  "name": "guard_ok",
+  "state": {
+   "pending_action": "SELECT * FROM users ORDER BY created_at DESC LIMIT 10;",
+   "user_request": "show me the 10 newest users"
+  },
+  "question": {
+   "type": "noul",
+   "instructions": "Is the pending action consistent with the user's request?"
+  },
+  "label": 1
+ },
+ {
+  "name": "stars_5",
+  "state": "Absolutely fantastic, would buy again in a heartbeat!",
+  "question": {
+   "type": "score",
+   "instructions": "How positive is this review?",
+   "options": [
+    "very negative",
+    "negative",
+    "neutral",
+    "positive",
+    "very positive"
+   ]
+  },
+  "label": 4
+ },
+ {
+  "name": "stars_1",
+  "state": "Broke after one day. Total waste of money.",
+  "question": {
+   "type": "score",
+   "instructions": "How positive is this review?",
+   "options": [
+    "very negative",
+    "negative",
+    "neutral",
+    "positive",
+    "very positive"
+   ]
+  },
+  "label": 0
+ },
+ {
+  "name": "urgency",
+  "state": "Production is down for all customers!!",
+  "question": {
+   "type": "score",
+   "instructions": "How urgent is this?",
+   "options": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "label": 2
+ },
+ {
+  "name": "route_tech_perm_sale",
+  "state": "The app crashes every time I open the settings page.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle this?",
+   "options": [
+    "sales",
+    "billing",
+    "technical support"
+   ]
+  },
+  "label": "technical support"
+ },
+ {
+  "name": "route_tech_perm_tech",
+  "state": "The app crashes every time I open the settings page.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle this?",
+   "options": [
+    "technical support",
+    "sales",
+    "billing"
+   ]
+  },
+  "label": "technical support"
+ },
+ {
+  "name": "long_route_20",
+  "state": "[000] The customer thanked the agent and mentioned a holiday.\n[001] The customer thanked the agent and mentioned a holiday.\n[002] The customer wrote in about their account.\n[003] An agent confirmed the order number and apologised for the delay.\n[004] There was a short exchange about the loyalty programme and points balance.\n[005] The customer thanked the agent and mentioned a holiday.\n[006] The customer thanked the agent and mentioned a holiday.\n[007] An agent confirmed the order number and apologised for the delay.\n[008] The customer thanked the agent and mentioned a holiday.\n[009] An agent confirmed the order number and apologised for the delay.\n[010] There was a short exchange about the loyalty programme and points balance.\n[011] Earlier messages discussed shipping times and address changes.\n[012] There was a short exchange about the loyalty programme and points balance.\n[KEY] Latest message: I was charged twice for my last invoice and need one charge reversed.\n[013] Earlier messages discussed shipping times and address changes.\n[014] An agent confirmed the order number and apologised for the delay.\n[015] Earlier messages discussed shipping times and address changes.\n[016] The customer wrote in about their account.\n[017] There was a short exchange about the loyalty programme and points balance.\n[018] An agent confirmed the order number and apologised for the delay.\n[019] There was a short exchange about the loyalty programme and points balance.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle the latest message?",
+   "options": [
+    "billing",
+    "technical support",
+    "sales",
+    "shipping"
+   ]
+  },
+  "label": "billing"
+ },
+ {
+  "name": "long_route_60",
+  "state": "[000] There was a short exchange about the loyalty programme and points balance.\n[001] Earlier messages discussed shipping times and address changes.\n[002] An agent confirmed the order number and apologised for the delay.\n[003] The customer wrote in about their account.\n[004] The customer wrote in about their account.\n[005] An agent confirmed the order number and apologised for the delay.\n[006] The customer thanked the agent and mentioned a holiday.\n[007] There was a short exchange about the loyalty programme and points balance.\n[008] The customer wrote in about their account.\n[009] An agent confirmed the order number and apologised for the delay.\n[010] The customer thanked the agent and mentioned a holiday.\n[011] An agent confirmed the order number and apologised for the delay.\n[012] There was a short exchange about the loyalty programme and points balance.\n[013] Earlier messages discussed shipping times and address changes.\n[014] There was a short exchange about the loyalty programme and points balance.\n[015] The customer thanked the agent and mentioned a holiday.\n[016] The customer thanked the agent and mentioned a holiday.\n[017] There was a short exchange about the loyalty programme and points balance.\n[018] An agent confirmed the order number and apologised for the delay.\n[019] The customer wrote in about their account.\n[020] There was a short exchange about the loyalty programme and points balance.\n[021] The customer wrote in about their account.\n[022] The customer wrote in about their account.\n[023] The customer thanked the agent and mentioned a holiday.\n[024] The customer wrote in about their account.\n[025] There was a short exchange about the loyalty programme and points balance.\n[026] The customer thanked the agent and mentioned a holiday.\n[027] An agent confirmed the order number and apologised for the delay.\n[028] Earlier messages discussed shipping times and address changes.\n[029] An agent confirmed the order number and apologised for the delay.\n[030] The customer wrote in about their account.\n[031] Earlier messages discussed shipping times and address changes.\n[032] There was a short exchange about the loyalty programme and points balance.\n[033] Earlier messages discussed shipping times and address changes.\n[034] Earlier messages discussed shipping times and address changes.\n[035] Earlier messages discussed shipping times and address changes.\n[036] There was a short exchange about the loyalty programme and points balance.\n[037] The customer thanked the agent and mentioned a holiday.\n[038] The customer wrote in about their account.\n[039] The customer wrote in about their account.\n[KEY] Latest message: I was charged twice for my last invoice and need one charge reversed.\n[040] An agent confirmed the order number and apologised for the delay.\n[041] There was a short exchange about the loyalty programme and points balance.\n[042] The customer thanked the agent and mentioned a holiday.\n[043] The customer wrote in about their account.\n[044] An agent confirmed the order number and apologised for the delay.\n[045] There was a short exchange about the loyalty programme and points balance.\n[046] An agent confirmed the order number and apologised for the delay.\n[047] The customer wrote in about their account.\n[048] There was a short exchange about the loyalty programme and points balance.\n[049] An agent confirmed the order number and apologised for the delay.\n[050] There was a short exchange about the loyalty programme and points balance.\n[051] Earlier messages discussed shipping times and address changes.\n[052] There was a short exchange about the loyalty programme and points balance.\n[053] There was a short exchange about the loyalty programme and points balance.\n[054] There was a short exchange about the loyalty programme and points balance.\n[055] An agent confirmed the order number and apologised for the delay.\n[056] The customer thanked the agent and mentioned a holiday.\n[057] The customer wrote in about their account.\n[058] There was a short exchange about the loyalty programme and points balance.\n[059] The customer thanked the agent and mentioned a holiday.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle the latest message?",
+   "options": [
+    "billing",
+    "technical support",
+    "sales",
+    "shipping"
+   ]
+  },
+  "label": "billing"
+ },
+ {
+  "name": "long_route_120",
+  "state": "[000] An agent confirmed the order number and apologised for the delay.\n[001] There was a short exchange about the loyalty programme and points balance.\n[002] Earlier messages discussed shipping times and address changes.\n[003] An agent confirmed the order number and apologised for the delay.\n[004] Earlier messages discussed shipping times and address changes.\n[005] Earlier messages discussed shipping times and address changes.\n[006] Earlier messages discussed shipping times and address changes.\n[007] The customer wrote in about their account.\n[008] There was a short exchange about the loyalty programme and points balance.\n[009] An agent confirmed the order number and apologised for the delay.\n[010] The customer thanked the agent and mentioned a holiday.\n[011] The customer wrote in about their account.\n[012] The customer wrote in about their account.\n[013] Earlier messages discussed shipping times and address changes.\n[014] Earlier messages discussed shipping times and address changes.\n[015] The customer wrote in about their account.\n[016] The customer wrote in about their account.\n[017] There was a short exchange about the loyalty programme and points balance.\n[018] The customer thanked the agent and mentioned a holiday.\n[019] There was a short exchange about the loyalty programme and points balance.\n[020] An agent confirmed the order number and apologised for the delay.\n[021] There was a short exchange about the loyalty programme and points balance.\n[022] Earlier messages discussed shipping times and address changes.\n[023] Earlier messages discussed shipping times and address changes.\n[024] There was a short exchange about the loyalty programme and points balance.\n[025] The customer thanked the agent and mentioned a holiday.\n[026] There was a short exchange about the loyalty programme and points balance.\n[027] An agent confirmed the order number and apologised for the delay.\n[028] The customer thanked the agent and mentioned a holiday.\n[029] The customer thanked the agent and mentioned a holiday.\n[030] An agent confirmed the order number and apologised for the delay.\n[031] The customer wrote in about their account.\n[032] An agent confirmed the order number and apologised for the delay.\n[033] There was a short exchange about the loyalty programme and points balance.\n[034] The customer wrote in about their account.\n[035] The customer thanked the agent and mentioned a holiday.\n[036] There was a short exchange about the loyalty programme and points balance.\n[037] An agent confirmed the order number and apologised for the delay.\n[038] Earlier messages discussed shipping times and address changes.\n[039] Earlier messages discussed shipping times and address changes.\n[040] The customer wrote in about their account.\n[041] An agent confirmed the order number and apologised for the delay.\n[042] The customer wrote in about their account.\n[043] Earlier messages discussed shipping times and address changes.\n[044] An agent confirmed the order number and apologised for the delay.\n[045] Earlier messages discussed shipping times and address changes.\n[046] An agent confirmed the order number and apologised for the delay.\n[047] The customer thanked the agent and mentioned a holiday.\n[048] The customer wrote in about their account.\n[049] The customer wrote in about their account.\n[050] Earlier messages discussed shipping times and address changes.\n[051] Earlier messages discussed shipping times and address changes.\n[052] The customer wrote in about their account.\n[053] There was a short exchange about the loyalty programme and points balance.\n[054] There was a short exchange about the loyalty programme and points balance.\n[055] There was a short exchange about the loyalty programme and points balance.\n[056] The customer wrote in about their account.\n[057] The customer wrote in about their account.\n[058] The customer wrote in about their account.\n[059] Earlier messages discussed shipping times and address changes.\n[060] There was a short exchange about the loyalty programme and points balance.\n[061] There was a short exchange about the loyalty programme and points balance.\n[062] The customer wrote in about their account.\n[063] The customer thanked the agent and mentioned a holiday.\n[064] The customer wrote in about their account.\n[065] An agent confirmed the order number and apologised for the delay.\n[066] The customer wrote in about their account.\n[067] The customer wrote in about their account.\n[068] There was a short exchange about the loyalty programme and points balance.\n[069] The customer wrote in about their account.\n[070] Earlier messages discussed shipping times and address changes.\n[071] Earlier messages discussed shipping times and address changes.\n[072] The customer wrote in about their account.\n[073] The customer thanked the agent and mentioned a holiday.\n[074] Earlier messages discussed shipping times and address changes.\n[075] The customer wrote in about their account.\n[076] The customer wrote in about their account.\n[077] There was a short exchange about the loyalty programme and points balance.\n[078] The customer thanked the agent and mentioned a holiday.\n[079] There was a short exchange about the loyalty programme and points balance.\n[KEY] Latest message: I was charged twice for my last invoice and need one charge reversed.\n[080] The customer wrote in about their account.\n[081] An agent confirmed the order number and apologised for the delay.\n[082] The customer wrote in about their account.\n[083] Earlier messages discussed shipping times and address changes.\n[084] The customer wrote in about their account.\n[085] An agent confirmed the order number and apologised for the delay.\n[086] An agent confirmed the order number and apologised for the delay.\n[087] The customer thanked the agent and mentioned a holiday.\n[088] Earlier messages discussed shipping times and address changes.\n[089] The customer wrote in about their account.\n[090] There was a short exchange about the loyalty programme and points balance.\n[091] The customer thanked the agent and mentioned a holiday.\n[092] The customer wrote in about their account.\n[093] There was a short exchange about the loyalty programme and points balance.\n[094] The customer wrote in about their account.\n[095] The customer thanked the agent and mentioned a holiday.\n[096] Earlier messages discussed shipping times and address changes.\n[097] An agent confirmed the order number and apologised for the delay.\n[098] An agent confirmed the order number and apologised for the delay.\n[099] The customer thanked the agent and mentioned a holiday.\n[100] There was a short exchange about the loyalty programme and points balance.\n[101] Earlier messages discussed shipping times and address changes.\n[102] Earlier messages discussed shipping times and address changes.\n[103] The customer wrote in about their account.\n[104] Earlier messages discussed shipping times and address changes.\n[105] Earlier messages discussed shipping times and address changes.\n[106] An agent confirmed the order number and apologised for the delay.\n[107] There was a short exchange about the loyalty programme and points balance.\n[108] An agent confirmed the order number and apologised for the delay.\n[109] The customer wrote in about their account.\n[110] There was a short exchange about the loyalty programme and points balance.\n[111] The customer thanked the agent and mentioned a holiday.\n[112] Earlier messages discussed shipping times and address changes.\n[113] The customer wrote in about their account.\n[114] The customer thanked the agent and mentioned a holiday.\n[115] The customer thanked the agent and mentioned a holiday.\n[116] There was a short exchange about the loyalty programme and points balance.\n[117] There was a short exchange about the loyalty programme and points balance.\n[118] An agent confirmed the order number and apologised for the delay.\n[119] An agent confirmed the order number and apologised for the delay.",
+  "question": {
+   "type": "choice",
+   "instructions": "Which team should handle the latest message?",
+   "options": [
+    "billing",
+    "technical support",
+    "sales",
+    "shipping"
+   ]
+  },
+  "label": "billing"
+ },
+ {
+  "name": "long_noul_60",
+  "state": "[000] The customer thanked the agent and mentioned a holiday.\n[001] An agent confirmed the order number and apologised for the delay.\n[002] Earlier messages discussed shipping times and address changes.\n[003] There was a short exchange about the loyalty programme and points balance.\n[004] The customer wrote in about their account.\n[005] The customer thanked the agent and mentioned a holiday.\n[006] The customer wrote in about their account.\n[007] An agent confirmed the order number and apologised for the delay.\n[008] The customer wrote in about their account.\n[009] There was a short exchange about the loyalty programme and points balance.\n[010] An agent confirmed the order number and apologised for the delay.\n[011] Earlier messages discussed shipping times and address changes.\n[012] Earlier messages discussed shipping times and address changes.\n[013] The customer thanked the agent and mentioned a holiday.\n[014] An agent confirmed the order number and apologised for the delay.\n[015] There was a short exchange about the loyalty programme and points balance.\n[016] An agent confirmed the order number and apologised for the delay.\n[017] An agent confirmed the order number and apologised for the delay.\n[018] There was a short exchange about the loyalty programme and points balance.\n[019] There was a short exchange about the loyalty programme and points balance.\n[020] Earlier messages discussed shipping times and address changes.\n[021] An agent confirmed the order number and apologised for the delay.\n[022] The customer thanked the agent and mentioned a holiday.\n[023] The customer thanked the agent and mentioned a holiday.\n[024] The customer wrote in about their account.\n[025] The customer wrote in about their account.\n[026] There was a short exchange about the loyalty programme and points balance.\n[027] Earlier messages discussed shipping times and address changes.\n[028] An agent confirmed the order number and apologised for the delay.\n[029] Earlier messages discussed shipping times and address changes.\n[030] Earlier messages discussed shipping times and address changes.\n[031] Earlier messages discussed shipping times and address changes.\n[032] The customer thanked the agent and mentioned a holiday.\n[033] The customer thanked the agent and mentioned a holiday.\n[034] There was a short exchange about the loyalty programme and points balance.\n[035] The customer thanked the agent and mentioned a holiday.\n[036] The customer wrote in about their account.\n[037] The customer thanked the agent and mentioned a holiday.\n[038] There was a short exchange about the loyalty programme and points balance.\n[039] The customer thanked the agent and mentioned a holiday.\n[KEY] Latest message: our whole team is locked out and the launch is in one hour!\n[040] The customer wrote in about their account.\n[041] Earlier messages discussed shipping times and address changes.\n[042] The customer thanked the agent and mentioned a holiday.\n[043] The customer wrote in about their account.\n[044] An agent confirmed the order number and apologised for the delay.\n[045] Earlier messages discussed shipping times and address changes.\n[046] The customer thanked the agent and mentioned a holiday.\n[047] There was a short exchange about the loyalty programme and points balance.\n[048] The customer thanked the agent and mentioned a holiday.\n[049] There was a short exchange about the loyalty programme and points balance.\n[050] There was a short exchange about the loyalty programme and points balance.\n[051] The customer wrote in about their account.\n[052] The customer wrote in about their account.\n[053] The customer thanked the agent and mentioned a holiday.\n[054] An agent confirmed the order number and apologised for the delay.\n[055] An agent confirmed the order number and apologised for the delay.\n[056] The customer thanked the agent and mentioned a holiday.\n[057] The customer wrote in about their account.\n[058] The customer thanked the agent and mentioned a holiday.\n[059] Earlier messages discussed shipping times and address changes.",
+  "question": {
+   "type": "noul",
+   "instructions": "Is the latest message urgent?"
+  },
+  "label": 1
+ }
+]
