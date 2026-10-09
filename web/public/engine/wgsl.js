@@ -5,6 +5,30 @@ export { kernelV1, kernelV4, kernelV6, REDUCE, fmtKey };
 
 const HDR = `enable f16;\nenable subgroups;\n`;
 
+/**
+ * A kernel without subgroup operations, for GPUs whose subgroup size is not fixed at 32: "subgroup" sg / lane become
+ * aligned 32-thread groups of local_invocation_index, and subgroupAdd / subgroupMax a sum / max of the group through
+ * workgroup memory (two barriers; every call site is in uniform control flow).
+ */
+export function noSubgroups(code) {
+  code = code.replace("enable subgroups;\n", "");
+  if (!code.includes("@builtin(subgroup_id)")) return code;
+  const li = code.match(/@builtin\(local_invocation_index\) (\w+): u32/)?.[1] ?? "li32";
+  code = code.replace(/,\s*@builtin\(subgroup_id\) sg: u32, @builtin\(subgroup_invocation_id\) lane: u32/, li === "li32" ? ", @builtin(local_invocation_index) li32: u32" : "")
+    .replace(/(fn main\([\s\S]*?\)\s*\{)/, `$1\n  let sg = ${li} / 32u; let lane = ${li} % 32u;`)
+    .replaceAll("subgroupAdd(", `sum32(${li}, `).replaceAll("subgroupMax(", `max32(${li}, `);
+  if (/\bsubgroup(Add|Max|Min|Mul|And|Or|Xor|Shuffle\w*|Broadcast\w*|Ballot|Elect|All|Any|_id|_invocation_id|_size)\b/.test(code)) throw new Error("noSubgroups: unhandled subgroup use");
+  const NT = +code.match(/@workgroup_size\((\d+)\)/)[1];
+  const fold = (name, init, op) => `fn ${name}(li: u32, x: f32) -> f32 {
+  workgroupBarrier(); red32[li] = x; workgroupBarrier();
+  let b = li & ~31u; var r = ${init}; for (var i = 1u; i < 32u; i++) { r = ${op}; } return r;
+}`;
+  return code.replace("\n@compute", `\nvar<workgroup> red32: array<f32, ${NT}>;
+${fold("sum32", "red32[b]", "r + red32[b + i]")}
+${fold("max32", "red32[b]", "max(r, red32[b + i])")}
+@compute`);
+}
+
 /** ids -> x (f32 [L, D]) from the quantized embedding table (formats as gemmbench/kernels.js). One thread per 8 elements. */
 export const EMBED = (D, f = { bits: 4, group: 32, asym: false }) => {
   const g = f.group === 32 ? "blk" : `blk / ${f.group / 32}u`;
@@ -158,6 +182,68 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(subgroup_id) sg: u32, @bu
       if (lane == c) { mine = oc; }
     }
     if (lane < 8u) { o[t * ${H * DV}u + h * ${DV}u + dv0 + lane] = mine; }
+  }
+  for (var c = 0u; c < 8u; c++) { state[sb + c] = S[c].x; state[sb + ${DV}u + c] = S[c].y; state[sb + ${2 * DV}u + c] = S[c].z; state[sb + ${3 * DV}u + c] = S[c].w; }
+}`;
+
+/**
+ * GDN without subgroups: the same layout (32-thread groups as the subgroups), with the per-token reductions batched
+ * into two rounds through workgroup memory: (S k for the 8 columns, |q|^2, |k|^2), then S q. S kn = (S k) / |k|.
+ */
+export const GDN_NOSUB = ({ H, DK, DV, L, stride, aOff, bOff }) => HDR + `
+@group(0) @binding(0) var<storage, read> qkv: array<f32>;
+@group(0) @binding(1) var<storage, read> big: array<f16>;
+@group(0) @binding(2) var<storage, read> negA: array<f32>;
+@group(0) @binding(3) var<storage, read> dtb: array<f32>;
+@group(0) @binding(4) var<storage, read_write> o: array<f32>;
+@group(0) @binding(5) var<uniform> Lu: vec4<u32>;
+@group(0) @binding(6) var<storage, read_write> state: array<f32>;
+var<workgroup> part: array<vec4<f32>, 384>;    // [thread][slot]: up to 3 vec4 partial sums per thread
+var<workgroup> chunk: array<vec4<f32>, 48>;    // [group][slot][8-lane chunk]
+/** Sums over this thread's 32-thread group of up to 3 vec4 slots (ns used); every thread of the group gets them. */
+fn sums(li: u32, ns: u32, x0: vec4<f32>, x1: vec4<f32>, x2: vec4<f32>) -> array<vec4<f32>, 3> {
+  part[li * 3u] = x0; part[li * 3u + 1u] = x1; part[li * 3u + 2u] = x2;
+  workgroupBarrier();
+  let g = li / 32u; let l = li % 32u;
+  if (l < ns * 4u) {
+    let j = l / 4u; let k = l % 4u; var s = vec4<f32>(0.0);
+    for (var i = 0u; i < 8u; i++) { s += part[(g * 32u + k * 8u + i) * 3u + j]; }
+    chunk[(g * 3u + j) * 4u + k] = s;
+  }
+  workgroupBarrier();
+  var r: array<vec4<f32>, 3>;
+  for (var j = 0u; j < ns; j++) { let b = (g * 3u + j) * 4u; r[j] = (chunk[b] + chunk[b + 1u]) + (chunk[b + 2u] + chunk[b + 3u]); }
+  return r;
+}
+@compute @workgroup_size(128)
+fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  let sg = li / 32u; let lane = li % 32u;
+  let h = wg.x / ${DV / 32}u; let dv0 = (wg.x % ${DV / 32}u) * 32u + sg * 8u;
+  let C = ${2 * H * DK + H * DV}u;
+  var S: array<vec4<f32>, 8>;
+  let sb = h * ${DK * DV}u + lane * 4u * ${DV}u + dv0;
+  if (Lu.w == 1u) { for (var c = 0u; c < 8u; c++) { S[c] = vec4<f32>(state[sb + c], state[sb + ${DV}u + c], state[sb + ${2 * DV}u + c], state[sb + ${3 * DV}u + c]); } }
+  let na = negA[h]; let db = dtb[h];
+  let qs = 1.0 / sqrt(${DK}.0);
+  for (var t = 0u; t < Lu.x; t++) {
+    let base = t * C;
+    let q4 = vec4<f32>(qkv[base + h * ${DK}u + lane * 4u], qkv[base + h * ${DK}u + lane * 4u + 1u], qkv[base + h * ${DK}u + lane * 4u + 2u], qkv[base + h * ${DK}u + lane * 4u + 3u]);
+    let kb = base + ${H * DK}u + h * ${DK}u + lane * 4u;
+    let k4 = vec4<f32>(qkv[kb], qkv[kb + 1u], qkv[kb + 2u], qkv[kb + 3u]);
+    let a = f32(big[t * ${stride}u + ${aOff}u + h]); let b = f32(big[t * ${stride}u + ${bOff}u + h]);
+    let beta = 1.0 / (1.0 + exp(-b));
+    let x = a + db; let sp = select(log(1.0 + exp(x)), x, x > 20.0);
+    let decay = exp(na * sp);
+    for (var c = 0u; c < 8u; c++) { S[c] *= decay; }
+    let A = sums(li, 3u, vec4<f32>(dot(S[0], k4), dot(S[1], k4), dot(S[2], k4), dot(S[3], k4)),
+      vec4<f32>(dot(S[4], k4), dot(S[5], k4), dot(S[6], k4), dot(S[7], k4)), vec4<f32>(dot(q4, q4), dot(k4, k4), 0.0, 0.0));
+    let rk = inverseSqrt(A[2].y + 1e-6);
+    let qn = q4 * inverseSqrt(A[2].x + 1e-6) * qs; let kn = k4 * rk;
+    let vb = base + ${2 * H * DK}u + h * ${DV}u + dv0;
+    for (var c = 0u; c < 8u; c++) { S[c] += kn * ((qkv[vb + c] - A[c / 4u][c % 4u] * rk) * beta); }
+    let B = sums(li, 2u, vec4<f32>(dot(S[0], qn), dot(S[1], qn), dot(S[2], qn), dot(S[3], qn)),
+      vec4<f32>(dot(S[4], qn), dot(S[5], qn), dot(S[6], qn), dot(S[7], qn)), vec4<f32>(0.0));
+    if (lane < 8u) { o[t * ${H * DV}u + h * ${DV}u + dv0 + lane] = B[lane / 4u][lane % 4u]; }
   }
   for (var c = 0u; c < 8u; c++) { state[sb + c] = S[c].x; state[sb + ${DV}u + c] = S[c].y; state[sb + ${2 * DV}u + c] = S[c].z; state[sb + ${3 * DV}u + c] = S[c].w; }
 }`;

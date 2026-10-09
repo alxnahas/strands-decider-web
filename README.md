@@ -51,6 +51,11 @@ products) that gives the same answers: about 60 ms for the example above, 1.3 s 
   The tile table was tuned with a correctness check (`web/public/engine/tune.html`).
 - **Gated-delta recurrence:** one subgroup per 8 value columns. Each lane holds a 4×8 slice of the 128×128 state in
   registers, and every reduction is a `subgroupAdd`, so the loop needs no barriers.
+- **Without 32-wide subgroups:** the subgroup kernels assume exactly 32 lanes, which Apple and NVIDIA GPUs report but
+  most others (Intel, AMD, mobile) do not guarantee. There, every reduction goes through workgroup memory instead, and
+  the recurrence batches its per-token reductions into two rounds. Forced on the M4 Pro (`?subgroups=0`), this gives
+  the same JevBench answers and costs about 5% (39, 212 and 844 ms on the hosted build at 68, 512 and 2,048 tokens).
+  It has not been run on a GPU that needs it.
 - **Attention:** flash-style causal GQA with an online softmax and 16 queries per workgroup.
 - **Prefix cache:** recurrent state, conv history and K/V can be snapshotted and resumed. A prefix plus suffix gives
   bit-identical results to a full forward. Five questions about one ~1,500-token state take 239 ms once the state is

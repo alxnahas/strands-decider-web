@@ -6,7 +6,7 @@ const out = document.getElementById("out"); const log = (s) => { out.textContent
   const t0 = performance.now();
   const A = new URLSearchParams(location.search).get("assets");  // an exported variant dir, else the default weights
   const WB = A ? `${A}engine-weights` : "/engine-weights", MB = A ? `${A}model` : "/model";
-  const eng = await Engine.create(WB); window.eng = eng;
+  const eng = await Engine.create(WB, { subgroups: new URLSearchParams(location.search).get("subgroups") !== "0" }); window.eng = eng;
   log(`load ${(performance.now() - t0).toFixed(0)} ms`);
   const meta = await fetch(`${WB}/ref/meta.json`).then((r) => r.json());
   const ref = async (n) => new Float32Array(await fetch(`${WB}/ref/${n}.f32`).then((r) => r.arrayBuffer()));

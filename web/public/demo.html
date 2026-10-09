@@ -174,7 +174,7 @@ if (!("gpu" in navigator)) $("p-gpu").innerHTML = "GPU <b>WebGPU unavailable</b>
 decider.ready.then((r) => {
   $("p-status").className = "pill ok"; $("p-status").innerHTML = "status <b>ready</b>";
   $("p-load").innerHTML = `loaded in <b>${(r.timings.total_load_ms / 1000).toFixed(2)} s</b>${r.cached ? " from cache" : ""}`;
-  if (r.kernels === "portable") $("p-backend").innerHTML += ` · <span title="Chrome exposes subgroup-matrix only with --enable-unsafe-webgpu">portable matmul</span>`;
+  if (r.kernels?.startsWith("portable")) $("p-backend").innerHTML += ` · <span title="Chrome exposes subgroup-matrix only with --enable-unsafe-webgpu">${r.kernels.replace("portable", "portable matmul")}</span>`;
   $("loadbar").style.visibility = "hidden"; document.body.dataset.ready = "1";
   schedule(0);
   // the examples' rare-token embedding rows, in the background (a build that ships part of its embedding table)

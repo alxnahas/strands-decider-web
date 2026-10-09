@@ -51,3 +51,20 @@ for (const [chrome, args] of Object.entries(CHROME)) {
     });
   }
 }
+
+// GPUs whose subgroups are not exactly 32 wide (most Intel, AMD and mobile) run the subgroup-free kernels; ?subgroups=0
+// forces them here.
+test("demo: engine without subgroups", async () => {
+  const ctx = await chromium.launchPersistentContext(PROFILE, { channel: "chrome", headless: !process.env.HEADED, args: CHROME.stock });
+  try {
+    const page = await ctx.newPage(), logs = [];
+    page.on("console", (m) => logs.push(m.text()));
+    page.on("pageerror", (e) => logs.push(e.message));
+    await page.goto("http://127.0.0.1:8787/demo.html?backend=engine&subgroups=0");
+    await page.waitForFunction(() => document.body.dataset.ready, null, { timeout: 10 * 60_000 });
+    expect(await page.evaluate(() => window.decider.info.kernels)).toBe("portable, no subgroups");
+    await page.waitForFunction(() => +(document.body.dataset.inferences || 0) >= 1, null, { timeout: 60_000 });
+    await expect(page.getByTestId("answer")).toContainText("billing");
+    expect(logs.filter((l) => GPU_ERROR.test(l)).slice(0, 3)).toEqual([]);
+  } finally { await ctx.close(); }
+});

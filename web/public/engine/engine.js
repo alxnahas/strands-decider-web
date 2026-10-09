@@ -46,24 +46,26 @@ function fwht(x, o, n) {
   for (let h = 1; h < n; h *= 2) for (let i = o; i < o + n; i += 2 * h) for (let j = i; j < i + h; j++) { const a = x[j], b = x[j + h]; x[j] = a + b; x[j + h] = a - b; }
 }
 
-/**
- * Why `adapter` cannot run the engine (empty if it can). The WGSL assumes 32-wide subgroups (one lane per 4 key dims
- * in the gated-delta kernel, 8 subgroups per 256-thread norm), so an adapter that may pick another size is refused.
- */
+/** Why `adapter` cannot run the engine (empty if it can). */
 export function engineProblems(adapter) {
-  const p = [];
-  for (const f of ["shader-f16", "subgroups"]) if (!adapter.features.has(f)) p.push(`no ${f}`);
-  const { subgroupMinSize: lo, subgroupMaxSize: hi } = adapter.info ?? {};
-  if (lo !== 32 || hi !== 32) p.push(`subgroup size ${lo ?? "?"}-${hi ?? "?"} (needs exactly 32)`);
-  return p;
+  return adapter.features.has("shader-f16") ? [] : ["no shader-f16"];
 }
 
+/**
+ * Whether the kernels may use subgroup operations: the WGSL assumes 32-wide subgroups (one lane per 4 key dims in
+ * the gated-delta kernel, 8 subgroups per 256-thread norm). Elsewhere the kernels run through W.noSubgroups and the
+ * gated-delta step is W.GDN_NOSUB.
+ */
+export const subgroups32 = (adapter) => adapter.features.has("subgroups") && adapter.info?.subgroupMinSize === 32 && adapter.info?.subgroupMaxSize === 32;
+
 export class Engine {
-  static async create(base = "/engine-weights", { onProgress = () => {}, fetchShard } = {}) {
+  /** subgroups: false runs the subgroup-free kernels even where 32-wide subgroups are available (for tests). */
+  static async create(base = "/engine-weights", { onProgress = () => {}, fetchShard, subgroups = true } = {}) {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     const problems = engineProblems(adapter);
     if (problems.length) throw new Error(`this GPU can't run the WebGPU engine: ${problems.join(", ")}`);
-    const want = ["shader-f16", "subgroups", "chromium-experimental-subgroup-matrix", "timestamp-query"];
+    const sg32 = subgroups && subgroups32(adapter);
+    const want = ["shader-f16", "timestamp-query", ...(sg32 ? ["subgroups", "chromium-experimental-subgroup-matrix"] : [])];
     const device = await adapter.requestDevice({
       requiredFeatures: want.filter((f) => adapter.features.has(f)),
       requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
@@ -81,11 +83,12 @@ export class Engine {
       shards.push({ ...s, buf }); onProgress(s.path);
     }
     const e = manifest.embed, bundle = e && (fetchShard ? await fetchShard(`${base}/${e.bundle}`, e.bundle) : await download(`${base}/${e.bundle}`));
-    return new Engine(device, manifest, shards, bundle && { url: new URL(`${base}/${e.rows}`, self.location.href).href, bundle });
+    return new Engine(device, manifest, shards, bundle && { url: new URL(`${base}/${e.rows}`, self.location.href).href, bundle }, sg32);
   }
 
-  constructor(device, manifest, shards, lazy = null) {
-    this.d = device; this.cfg = manifest.config; this.sgm = device.features.has("chromium-experimental-subgroup-matrix"); this.tensors = manifest.tensors; this.shards = shards;
+  constructor(device, manifest, shards, lazy = null, sg32 = true) {
+    this.d = device; this.cfg = manifest.config; this.sg32 = sg32; this.sgm = sg32 && device.features.has("chromium-experimental-subgroup-matrix");
+    this.tensors = manifest.tensors; this.shards = shards;
     const c = this.cfg; this.LT = 4096;
     this.linear = c.layer_types.map((k, i) => (k === "linear_attention" ? i : -1)).filter((i) => i >= 0);
     this.full = c.layer_types.map((k, i) => (k === "full_attention" ? i : -1)).filter((i) => i >= 0);
@@ -176,9 +179,10 @@ export class Engine {
     return { buffer: s.buf, offset: t.offset - s.start, size: Math.ceil(t.bytes / 4) * 4 };
   }
   pipe(key, code) {
-    if (!this.pipes.has(key)) this.pipes.set(key, this.d.createComputePipeline({ layout: "auto", compute: { module: this.d.createShaderModule({ code: code() }), entryPoint: "main" } }));
+    if (!this.pipes.has(key)) this.pipes.set(key, this.d.createComputePipeline({ layout: "auto", compute: { module: this.d.createShaderModule({ code: this.wgsl(code) }), entryPoint: "main" } }));
     return this.pipes.get(key);
   }
+  wgsl(code) { return this.sg32 ? code() : W.noSubgroups(code()); }
   buf(size, usage = U.STORAGE) { return this.d.createBuffer({ size: Math.max(16, Math.ceil(size / 16) * 16), usage }); }
   uniform(words) { const b = this.buf(16, U.UNIFORM | U.COPY_DST); this.d.queue.writeBuffer(b, 0, new Uint32Array(words)); return b; }
 
@@ -200,7 +204,7 @@ export class Engine {
     for (const M of [8, 16, 32, 48, 64, 80, 96, 112, 128, 160, 256, 512, 1024]) for (const [fk, f] of fmts) { let k = matmulKernel(M, null, this.sgm); if (k.int4 && fk) k = V1; keys.set(k.key + fk, () => k.code(f)); }
     await Promise.all([...keys].map(async ([key, code]) => {
       if (this.pipes.has(key)) return;
-      this.pipes.set(key, await this.d.createComputePipelineAsync({ layout: "auto", compute: { module: this.d.createShaderModule({ code: code() }), entryPoint: "main" } }));
+      this.pipes.set(key, await this.d.createComputePipelineAsync({ layout: "auto", compute: { module: this.d.createShaderModule({ code: this.wgsl(code) }), entryPoint: "main" } }));
     }));
   }
 
@@ -260,7 +264,7 @@ export class Engine {
         const CC = 2 * H * DK + H * DV;
         step(`conv${N}`, () => W.CONV(CC, N, L), { 0: B.big, 1: this.w(P + "conv"), 2: B.qkvc, 3: this.work.hist[i] }, [Math.ceil(CC / 256), L, 1], `L${i}/conv`);
         step(`hist${N}`, () => W.HIST_UPDATE(CC, N), { 0: B.big, 1: this.work.hist[i], 2: Lu }, [Math.ceil(CC / 256), 1, 1], `L${i}/hist`);
-        step(`gdn${N}`, () => W.GDN({ H, DK, DV, L: 0, stride: N, aOff: 2 * H * DK + H * DV + H * DV, bOff: 2 * H * DK + H * DV + H * DV + H }),
+        step(`gdn${N}`, () => (this.sg32 ? W.GDN : W.GDN_NOSUB)({ H, DK, DV, L: 0, stride: N, aOff: 2 * H * DK + H * DV + H * DV, bOff: 2 * H * DK + H * DV + H * DV + H }),
           { 0: B.qkvc, 1: B.big, 2: this.w(P + "neg_exp_A"), 3: this.w(P + "dt_bias"), 4: B.of, 5: Lu, 6: this.work.state[i] }, [H * DV / 32, 1, 1], `L${i}/gdn`);
         step(`gnorm${N}`, () => W.GNORM({ H, DV, stride: N, zOff: 2 * H * DK + H * DV }), { 0: B.of, 1: B.big, 2: this.w(P + "gnorm"), 3: B.o }, [L * H / 4, 1, 1], `L${i}/gnorm`);
         matmul(B.o, P + "out_proj", B.y, `L${i}/out_proj`);

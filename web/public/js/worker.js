@@ -113,12 +113,12 @@ async function init({ device = "webgpu" }) {
     if (!gpu) throw new Error("engine backend needs WebGPU");
     const { Engine } = await import("../engine/engine.js");
     t = performance.now(); let hit = true;
-    engine = await Engine.create(asset("engine-weights"), { fetchShard: async (url, label, size) => { const r = await fetchCached(url, label, size); hit &&= r.hit; return r.buf; } });
+    engine = await Engine.create(asset("engine-weights"), { subgroups: QS.get("subgroups") !== "0", fetchShard: async (url, label, size) => { const r = await fetchCached(url, label, size); hit &&= r.hit; return r.buf; } });
     timings.fetch_ms = performance.now() - t;
     t = performance.now(); await engine.forward([27, 2374, 29], [2]); timings.session_ms = performance.now() - t;  // compile + warm
     engine.precompile();  // remaining matmul tile pipelines, in the background
     timings.total_load_ms = performance.now() - t0; runtime = "webgpu-engine";
-    post("ready", { variant: "engine-int4", runtime, timings, cached: hit, adapterInfo, kernels: engine.sgm ? "subgroup-matrix" : "portable" });
+    post("ready", { variant: "engine-int4", runtime, timings, cached: hit, adapterInfo, kernels: engine.sgm ? "subgroup-matrix" : engine.sg32 ? "portable" : "portable, no subgroups" });
     pruneCache();
     return;
   }
