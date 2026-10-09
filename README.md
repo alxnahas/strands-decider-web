@@ -86,8 +86,9 @@ The engine reads its format from `manifest.json`:
 The download is about 470 MB. Run through this engine in headless Chrome (stock or flagged, same answers), the
 build scores 176 on JevBench's 231 public tasks, the same as v21 in bfloat16 (v21 in the int4 format above: 163).
 On 48 of those tasks translated into zh, ja, ko, ar, hi, uk, de and pl, it is within 3 of v21's count in every
-language. GPU time per forward on the M4 Pro: 29 ms at 68 tokens, 161 ms at 512,
-646 ms at 2,048 (stock Chrome, portable matmul: 37, 201 and 800 ms). The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
+language. On held-out OpenBookQA (3,000 tasks) and BoolQ (3,270), never used to choose a build, an MLX simulation
+of the same weights is 0.3 and 0.9 points below v21 (BoolQ 95% interval −1.5 to −0.3). GPU time per forward on the
+M4 Pro: 29 ms at 68 tokens, 161 ms at 512, 646 ms at 2,048 (stock Chrome, portable matmul: 37, 201 and 800 ms). The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
 
 ## Run locally
 
