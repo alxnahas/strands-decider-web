@@ -6,9 +6,9 @@ import { PROFILE } from "./fixtures.mjs";
 const CHROME = { stock: [], flagged: ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist"] };
 const GPU_ERROR = /WGSL|Invalid (ShaderModule|ComputePipeline|BindGroup|CommandBuffer)|GPUPipelineError|GPUValidationError|load failed/i;
 
-// With no ?backend, the demo picks the faster backend for this browser: the engine only when subgroup-matrix is
-// available (its portable matmul is ~2x slower than ORT on long prompts), otherwise ONNX Runtime Web.
-for (const [chrome, expected] of [["stock", "ort"], ["flagged", "engine"]]) {
+// With no ?backend, the demo picks the engine wherever it runs: its portable matmul (stock Chrome) is faster than
+// ONNX Runtime Web at every length measured.
+for (const [chrome, expected] of [["stock", "engine"], ["flagged", "engine"]]) {
   test(`demo: ${chrome} Chrome picks ${expected} by default`, async () => {
     const ctx = await chromium.launchPersistentContext(PROFILE, { channel: "chrome", headless: !process.env.HEADED, args: CHROME[chrome] });
     try {

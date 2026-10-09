@@ -429,6 +429,55 @@ fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec
 }`;
 }
 
+/**
+ * v6: portable tiled GEMM (no subgroup-matrix) for int4 group-32 symmetric weights. Workgroup tile TM x TN with
+ * (TM / RM) x (TN / RN) threads; thread (tx, ty) accumulates rows ty + TY i and columns tx + TX j in f32. Per 32-wide
+ * K block, A and the dequantised B are staged in workgroup memory as f16 rows of 8 vec4 (padded to 9 against bank
+ * conflicts), and each thread runs RM x RN dot4s per vec4 of K.
+ */
+export function kernelV6({ TM = 64, TN = 64, RM = 4, RN = 4 } = {}) {
+  const TX = TN / RN, TY = TM / RM, NT = TX * TY, LD = 9;
+  const R = (n, f) => [...Array(n).keys()].map(f).join(" ");
+  return /* wgsl */ `
+enable f16;
+struct P { M: u32, N: u32, K: u32, blocks: u32 };
+@group(0) @binding(0) var<storage, read> A: array<vec4<f16>>;
+@group(0) @binding(1) var<storage, read> B: array<u32>;
+@group(0) @binding(2) var<storage, read> Sc: array<f16>;
+@group(0) @binding(3) var<storage, read_write> Y: array<f16>;
+@group(0) @binding(4) var<uniform> p: P;
+const TM = ${TM}u; const TN = ${TN}u; const TX = ${TX}u; const TY = ${TY}u; const NT = ${NT}u; const LD = ${LD}u;
+var<workgroup> As: array<vec4<f16>, ${TM * LD}>;
+var<workgroup> Bs: array<vec4<f16>, ${TN * LD}>;
+@compute @workgroup_size(${NT})
+fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  let tx = li % TX; let ty = li / TX;
+  let n0 = wg.x * TN; let m0 = wg.y * TM; let K4 = p.K / 4u;
+  ${R(RM, (i) => `var c${i} = vec4<f32>(0.0);`)}${RN > 4 ? " " + R(RM, (i) => `var d${i} = vec4<f32>(0.0);`) : ""}
+  for (var b = 0u; b < p.blocks; b++) {
+    for (var e = li; e < TM * 8u; e += NT) {
+      let r = e / 8u; let m = m0 + r;
+      var v = vec4<f16>(0.0); if (m < p.M) { v = A[m * K4 + b * 8u + e % 8u]; }
+      As[r * LD + e % 8u] = v;
+    }
+    for (var e = li; e < TN * 4u; e += NT) {
+      let c = e / 4u; let wd = e % 4u; let blk = (n0 + c) * p.blocks + b;
+      let w = vec4<u32>(B[blk * 4u + wd]); let sc = Sc[blk];
+      Bs[c * LD + wd * 2u] = (vec4<f16>((w >> vec4<u32>(0u, 4u, 8u, 12u)) & vec4<u32>(15u)) - vec4<f16>(8.0)) * sc;
+      Bs[c * LD + wd * 2u + 1u] = (vec4<f16>((w >> vec4<u32>(16u, 20u, 24u, 28u)) & vec4<u32>(15u)) - vec4<f16>(8.0)) * sc;
+    }
+    workgroupBarrier();
+    for (var q = 0u; q < 8u; q++) {
+      ${R(RM, (i) => `let a${i} = vec4<f32>(As[(ty + ${i * TY}u) * LD + q]);`)}
+      ${R(RN, (j) => `let b${j} = vec4<f32>(Bs[(tx + ${j * TX}u) * LD + q]);`)}
+      ${R(RM, (i) => R(RN, (j) => `${j < 4 ? "c" : "d"}${i}[${j % 4}] += dot(a${i}, b${j});`))}
+    }
+    workgroupBarrier();
+  }
+  ${R(RM, (i) => `{ let m = m0 + ty + ${i * TY}u; if (m < p.M) { ${R(RN, (j) => `Y[m * p.N + n0 + tx + ${j * TX}u] = f16(${j < 4 ? "c" : "d"}${i}[${j % 4}]);`)} } }`)}
+}`;
+}
+
 // name -> { code, groups(M, N, K) => [x, y, z] }. The first entry is the fp32-accurate reference for error checks.
 export const KERNELS = {
   ...Object.fromEntries([[32, 1], [64, 4], [16, 4], [80, 4]].map(([TM, SK]) => [`v5_${TM}_sk${SK}`, {

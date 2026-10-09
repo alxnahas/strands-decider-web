@@ -21,5 +21,5 @@ test("overlapping decide and decideMany calls match sequential ones", async ({ p
     return { seq, par: par.slice(0, -1).map((x) => probs(x.answer)), many: probs(par.at(-1).answers.team) };
   }, QS);
   expect(r.par).toEqual(r.seq);
-  expect(r.many.map((p) => +p.toFixed(2))).toEqual(r.seq[0].map((p) => +p.toFixed(2)));
+  r.many.forEach((p, i) => expect(Math.abs(p - r.seq[0][i])).toBeLessThan(0.01));  // prefix + suffix forwards: close, not bit-equal on ORT
 });

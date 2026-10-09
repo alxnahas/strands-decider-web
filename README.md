@@ -34,10 +34,11 @@ Raw forward latency in ms:
 |---|---|---|---|---|---|---|
 | ONNX Runtime Web | 40 | 43 | 66 | 109 | 362 | 1455 |
 | engine with subgroup-matrix* | 12.8 | 14.8 | 38.7 | 72 | 272 | 1046 |
+| engine, portable matmul (stock Chrome) | 12.5 | 22 | 49 | 92 | 324 | 1292 |
 
-\* The engine's fast matmul uses `chromium-experimental-subgroup-matrix`. Stock Chrome exposes that feature only
-with `--enable-unsafe-webgpu`. Without it, the engine uses a portable matmul that is just as accurate (27/27) but
-slower: 91 ms for the example above and 2.9 s at 2,048 tokens. The local demo picks ORT in that case.
+\* The engine's fastest matmul uses `chromium-experimental-subgroup-matrix`. Stock Chrome exposes that feature only
+with `--enable-unsafe-webgpu`. Without it, the engine uses a portable tiled matmul (shared-memory tiles, f16 dot
+products) that gives the same answers: about 60 ms for the example above, 1.3 s at 2,048 tokens.
 
 ### How the engine works
 
@@ -45,6 +46,8 @@ slower: 91 ms for the example above and 2.9 s at 2,048 tokens. The local demo pi
   input are fused (qkv/z/a/b, q/k/v, gate/up). Total size is 1.06 GB in two shards.
 - **Matmul:** split-K across workgroups, so small prompts still fill the GPU; coalesced 16-byte weight-block loads;
   8×8×8 f16 subgroup-matrix MMAs; tile heights matched to the prompt length. For M ≤ 8 it uses a multi-row GEMV.
+  Without subgroup-matrix: the GEMV up to 20 rows, then a register-tiled GEMM (TM×64 tiles, 16×16 threads,
+  `web/public/gemmbench/portable.html`).
   The tile table was tuned with a correctness check (`web/public/engine/tune.html`).
 - **Gated-delta recurrence:** one subgroup per 8 value columns. Each lane holds a 4×8 slice of the 128×128 state in
   registers, and every reduction is a `subgroupAdd`, so the loop needs no barriers.
@@ -79,7 +82,7 @@ The download is about 470 MB. Run through this engine in headless Chrome (stock 
 build scores 176 on JevBench's 231 public tasks, the same as v21 in bfloat16 (v21 in the int4 format above: 163).
 On 48 of those tasks translated into zh, ja, ko, ar, hi, uk, de and pl, it is within 3 of v21's count in every
 language. GPU time per forward on the M4 Pro: 29 ms at 68 tokens, 161 ms at 512,
-646 ms at 2,048. The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
+646 ms at 2,048 (stock Chrome, portable matmul: 37, 201 and 800 ms). The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
 
 ## Run locally
 

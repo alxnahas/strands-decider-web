@@ -4,16 +4,25 @@ import { decodeScales, unpackShard } from "./wire.js";
 
 const U = GPUBufferUsage;
 
+const V1 = { key: "v1", code: (fmt) => W.kernelV1({ fmt }), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
+/** Portable tiled GEMM, TM x 64 tiles, 16 x 16 threads with TM / 16 x 4 outputs each; int4 block 32 symmetric only. */
+const v6 = (TM) => ({ key: `v6_${TM}`, int4: true, code: () => W.kernelV6({ TM, TN: 64, RM: TM / 16, RN: 4 }), groups: (M, N) => [N / 64, Math.ceil(M / TM), 1], SK: 1 });
+
 /**
  * Matmul kernel choice by M (measured on M4 Pro; see gemmbench/chain.html). Without subgroup-matrix support
- * (stock Chrome exposes it only behind --enable-unsafe-webgpu) every M uses the portable multi-row GEMV.
+ * (stock Chrome exposes it only behind --enable-unsafe-webgpu) the portable kernels: the multi-row GEMV up to 20
+ * rows, then tiled (gemmbench/portable.html): one exact-height tile up to 128 rows, two up to 256, then 64-row
+ * tiles, 128-row ones past 900.
  */
 function matmulKernel(M, force = null, sgm = true) {
-  const v1 = { key: "v1", code: (fmt) => W.kernelV1({ fmt }), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
-  if (!sgm) return v1;
-  if (force) { const [TM, SK] = force; if (TM === 0) return v1;
+  if (!sgm) {
+    if (force) return force[0] === 0 ? V1 : v6(force[0]);
+    if (M <= 20) return V1;
+    return v6(M <= 128 ? Math.ceil(M / 16) * 16 : M <= 256 ? Math.ceil(M / 32) * 16 : M <= 900 ? 64 : 128);
+  }
+  if (force) { const [TM, SK] = force; if (TM === 0) return V1;
     return { key: `v4_${TM}_${SK}`, code: (fmt) => W.kernelV4({ TM, SK, KB: 2, fmt }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK }; }
-  if (M <= 8) return v1;
+  if (M <= 8) return V1;
   // Tuned on M4 Pro (engine/tune.html): one exact-height tile (multiple of 16) up to 96 rows, then 64-row tiles.
   let TM, SK;
   if (M <= 96) [TM, SK] = [Math.ceil(M / 16) * 16, 4];
@@ -188,7 +197,7 @@ export class Engine {
   /** Compile the matmul pipelines the tuned table can pick, without blocking the first request. */
   async precompile() {
     const keys = new Map(), fmts = new Map(Object.entries(this.tensors).filter(([n]) => n.endsWith(".q") && n !== "embed.q").map(([, t]) => [W.fmtKey(fmtOf(t)), fmtOf(t)]));
-    for (const M of [8, 16, 32, 48, 64, 80, 96, 128, 160, 256, 512]) for (const [fk, f] of fmts) { const k = matmulKernel(M, null, this.sgm); keys.set(k.key + fk, () => k.code(f)); }
+    for (const M of [8, 16, 32, 48, 64, 80, 96, 112, 128, 160, 256, 512, 1024]) for (const [fk, f] of fmts) { let k = matmulKernel(M, null, this.sgm); if (k.int4 && fk) k = V1; keys.set(k.key + fk, () => k.code(f)); }
     await Promise.all([...keys].map(async ([key, code]) => {
       if (this.pipes.has(key)) return;
       this.pipes.set(key, await this.d.createComputePipelineAsync({ layout: "auto", compute: { module: this.d.createShaderModule({ code: code() }), entryPoint: "main" } }));
@@ -226,7 +235,8 @@ export class Engine {
       const e = { 0: slice(A, L * K * 2), 1: this.w(wname + ".q"), 2: this.w(wname + ".s"), 3: slice(Y, L * N * 2), 4: P };
       if (mk.SK > 1) e[5] = B.part;
       if (f.asym) e[6] = this.w(wname + ".b");
-      step(mk.key + W.fmtKey(f), () => mk.code(f), e, mk.groups(L, N), label);
+      const k = mk.int4 && (W.fmtKey(f) || N % 64) ? V1 : mk;
+      step(k.key + W.fmtKey(f), () => k.code(f), e, k.groups(L, N), label);
       if (mk.SK > 1) step(`reduce${mk.SK}`, () => W.REDUCE(mk.SK), { 3: slice(Y, L * N * 2), 4: P, 5: B.part }, [Math.ceil((L * N) / 256), 1, 1], label + "/reduce");
       return N;
     };

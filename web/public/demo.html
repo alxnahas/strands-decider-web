@@ -106,8 +106,8 @@
 </main>
 
 <script type="module">
-// Default to the hand-written engine only where its fast matmul works (subgroup-matrix; stock Chrome exposes it
-// only behind --enable-unsafe-webgpu), otherwise ONNX Runtime Web. ?backend= overrides. The client forwards the query to the worker.
+// Default to the hand-written engine wherever it runs (its portable matmul is faster than ONNX Runtime Web at every
+// length measured), otherwise ONNX Runtime Web. ?backend= overrides. The client forwards the query to the worker.
 const meta = (n) => document.querySelector(`meta[name=${n}]`).content;
 const backends = meta("decider-backends").split(/\s+/), assets = meta("decider-assets") || null;
 const params = new URLSearchParams(location.search);
@@ -115,8 +115,7 @@ if (backends.length === 1) params.set("backend", backends[0]);
 else if (!params.has("backend")) {
   const adapter = await navigator.gpu?.requestAdapter();
   const { engineProblems } = await import("./engine/engine.js");
-  const fast = adapter && !engineProblems(adapter).length && adapter.features.has("chromium-experimental-subgroup-matrix");
-  params.set("backend", fast ? "engine" : "ort");
+  params.set("backend", adapter && !engineProblems(adapter).length ? "engine" : "ort");
 }
 history.replaceState(null, "", `?${params}`);
 const backend = params.get("backend");

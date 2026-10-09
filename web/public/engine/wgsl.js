@@ -1,7 +1,7 @@
 // WGSL for the hand-written Qwen3.5 (Strands Decider torso) prefill engine. Batch 1, L tokens.
 // Activations: residual stream f32, matmul inputs/outputs f16, recurrent math f32.
-import { kernelV1, kernelV4, REDUCE, fmtKey } from "../gemmbench/kernels.js";
-export { kernelV1, kernelV4, REDUCE, fmtKey };
+import { kernelV1, kernelV4, kernelV6, REDUCE, fmtKey } from "../gemmbench/kernels.js";
+export { kernelV1, kernelV4, kernelV6, REDUCE, fmtKey };
 
 const HDR = `enable f16;\nenable subgroups;\n`;
 
