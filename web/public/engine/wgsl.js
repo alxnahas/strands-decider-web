@@ -1,23 +1,31 @@
 // WGSL for the hand-written Qwen3.5 (Strands Decider torso) prefill engine. Batch 1, L tokens.
 // Activations: residual stream f32, matmul inputs/outputs f16, recurrent math f32.
-import { kernelV1, kernelV4, REDUCE } from "../gemmbench/kernels.js";
-export { kernelV1, kernelV4, REDUCE };
+import { kernelV1, kernelV4, REDUCE, fmtKey } from "../gemmbench/kernels.js";
+export { kernelV1, kernelV4, REDUCE, fmtKey };
 
 const HDR = `enable f16;\nenable subgroups;\n`;
 
-/** ids -> x (f32 [L, D]) from the int4 embedding table. One thread per 8-element word. */
-export const EMBED = (D) => HDR + `
+/** ids -> x (f32 [L, D]) from the quantized embedding table (formats as gemmbench/kernels.js). One thread per 8 elements. */
+export const EMBED = (D, f = { bits: 4, group: 32, asym: false }) => {
+  const g = f.group === 32 ? "blk" : `blk / ${f.group / 32}u`;
+  const q = f.bits === 4 ? "(Q[blk * 4u + e / 8u] >> (4u * (e % 8u))) & 15u"
+    : `((Q[blk * ${f.bits}u + e / 16u] >> (2u * (e % 16u))) & 3u)${f.bits === 3 ? " | (((Q[blk * 3u + 2u] >> e) & 1u) << 2u)" : ""}`;
+  return HDR + `
 @group(0) @binding(0) var<storage, read> ids: array<u32>;
 @group(0) @binding(1) var<storage, read> Q: array<u32>;
 @group(0) @binding(2) var<storage, read> S: array<f16>;
 @group(0) @binding(3) var<storage, read_write> x: array<f32>;
+${f.asym ? "@group(0) @binding(4) var<storage, read> Bi: array<f16>;" : ""}
 @compute @workgroup_size(${D / 8})
 fn main(@builtin(local_invocation_index) w: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   let t = wg.x; let id = ids[t];
-  let blk = id * ${D / 32}u + w / 4u;
-  let word = Q[blk * 4u + w % 4u]; let sc = f32(S[blk]);
-  for (var e = 0u; e < 8u; e++) { x[t * ${D}u + w * 8u + e] = (f32((word >> (4u * e)) & 15u) - 8.0) * sc; }
+  let blk = id * ${D / 32}u + w / 4u; let sc = f32(S[${g}]);${f.asym ? ` let bi = f32(Bi[${g}]);` : ""}
+  for (var j = 0u; j < 8u; j++) {
+    let e = (w % 4u) * 8u + j;
+    x[t * ${D}u + w * 8u + j] = ${f.asym ? `f32(${q}) * sc + bi` : `(f32(${q}) - ${2 ** (f.bits - 1)}.0) * sc`};
+  }
 }`;
+};
 
 /** Optional residual add (x += y), then zero-centred RMSNorm (weight already 1+w) -> h (f16). One WG per row. */
 export const ADD_NORM = (D, add, outF32 = false) => HDR + `
@@ -55,6 +63,37 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
   if (t >= arrayLength(&mid) / ${I}u) { return; }
   let gv = f32(big[t * ${2 * I}u + j]); let uv = f32(big[t * ${2 * I}u + ${I}u + j]);
   mid[i] = f16(gv / (1.0 + exp(-gv)) * uv);
+}`;
+
+/** In-place orthonormal Walsh-Hadamard transform of each contiguous n-block of a (one workgroup per block):
+ * the online input rotation of a tensor exported with `had: n`. */
+export const FWHT = (n) => HDR + `
+@group(0) @binding(0) var<storage, read_write> a: array<f16>;
+var<workgroup> sh: array<f32, ${n}>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  let o = wg.x * ${n}u;
+  for (var e = li; e < ${n}u; e += 256u) { sh[e] = f32(a[o + e]); }
+  workgroupBarrier();
+  for (var h = 1u; h < ${n}u; h = h * 2u) {
+    for (var p = li; p < ${n / 2}u; p += 256u) {
+      let i = (p / h) * 2u * h + p % h; let x = sh[i]; let y = sh[i + h];
+      sh[i] = x + y; sh[i + h] = x - y;
+    }
+    workgroupBarrier();
+  }
+  for (var e = li; e < ${n}u; e += 256u) { a[o + e] = f16(sh[e] * ${1 / Math.sqrt(n)}); }
+}`;
+
+/** y[t, j] += c[j] (f32 bias of an adapter layer). */
+export const ADD_BIAS = (N) => HDR + `
+@group(0) @binding(0) var<storage, read_write> y: array<f16>;
+@group(0) @binding(1) var<storage, read> c: array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+  let i = g.x + g.y * nw.x * 256u;
+  if (i >= arrayLength(&y)) { return; }
+  y[i] = f16(f32(y[i]) + c[i % ${N}u]);
 }`;
 
 /** Depthwise causal conv (kernel 4) + SiLU over the qkv channels of the fused in_proj output. */

@@ -12,6 +12,7 @@ const ROUTES = [
   ["/gemm/", path.resolve(ROOT, "../onnx/gemm")],
   ["/engine-weights/", path.resolve(ROOT, "../engine")],
   ["/model/", path.resolve(ROOT, "../models/decider")],
+  ["/variants/", path.resolve(process.env.VARIANTS || path.join(ROOT, "../variants"))],  // exported asset dirs (?assets=/variants/<name>/)
   ["/", path.join(ROOT, "public")],
 ];
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".css": "text/css" };

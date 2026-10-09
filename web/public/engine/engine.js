@@ -1,4 +1,4 @@
-// Hand-written WebGPU prefill engine for the Strands Decider torso (Qwen3.5-2B hybrid, int4 weights).
+// Hand-written WebGPU prefill engine for the Strands Decider torso (Qwen3.5-2B hybrid, 2-4 bit weights).
 import * as W from "./wgsl.js";
 
 const U = GPUBufferUsage;
@@ -8,17 +8,26 @@ const U = GPUBufferUsage;
  * (stock Chrome exposes it only behind --enable-unsafe-webgpu) every M uses the portable multi-row GEMV.
  */
 function matmulKernel(M, force = null, sgm = true) {
-  if (!sgm) return { key: "v1", code: () => W.kernelV1(), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
-  if (force) { const [TM, SK] = force; if (TM === 0) return { key: "v1", code: () => W.kernelV1(), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
-    return { key: `v4_${TM}_${SK}`, code: () => W.kernelV4({ TM, SK, KB: 2 }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK }; }
-  if (M <= 8) return { key: "v1", code: () => W.kernelV1(), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
+  const v1 = { key: "v1", code: (fmt) => W.kernelV1({ fmt }), groups: (M, N) => [N / 16, Math.ceil(M / 8), 1], SK: 1 };
+  if (!sgm) return v1;
+  if (force) { const [TM, SK] = force; if (TM === 0) return v1;
+    return { key: `v4_${TM}_${SK}`, code: (fmt) => W.kernelV4({ TM, SK, KB: 2, fmt }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK }; }
+  if (M <= 8) return v1;
   // Tuned on M4 Pro (engine/tune.html): one exact-height tile (multiple of 16) up to 96 rows, then 64-row tiles.
   let TM, SK;
   if (M <= 96) [TM, SK] = [Math.ceil(M / 16) * 16, 4];
   else if (M <= 128) [TM, SK] = [64, 4];
   else if (M <= 256) { TM = Math.ceil(M / 32) * 32 - M < Math.ceil(M / 64) * 64 - M - 16 ? 32 : 64; SK = TM === 32 ? 2 : 1; }
   else [TM, SK] = [64, 1];
-  return { key: `v4_${TM}_${SK}`, code: () => W.kernelV4({ TM, SK, KB: 2 }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK };
+  return { key: `v4_${TM}_${SK}`, code: (fmt) => W.kernelV4({ TM, SK, KB: 2, fmt }), groups: (M, N) => [N / 64, Math.ceil(M / TM), SK], SK };
+}
+
+/** A matmul weight's format (see gemmbench/kernels.js); manifests without one are int4, block 32, symmetric. */
+const fmtOf = (t) => ({ bits: t.bits ?? 4, group: t.group ?? 32, asym: !!t.asym });
+
+/** In-place fast Walsh-Hadamard transform (Sylvester order) of x[o .. o + n). */
+function fwht(x, o, n) {
+  for (let h = 1; h < n; h *= 2) for (let i = o; i < o + n; i += 2 * h) for (let j = i; j < i + h; j++) { const a = x[j], b = x[j + h]; x[j] = a + b; x[j + h] = a - b; }
 }
 
 /**
@@ -52,10 +61,11 @@ export class Engine {
       device.queue.writeBuffer(buf, 0, data.buffer, data.byteOffset, data.byteLength);
       shards.push({ ...s, buf }); onProgress(s.path);
     }
-    return new Engine(device, manifest, shards);
+    const e = manifest.embed, bundle = e && (fetchShard ? await fetchShard(`${base}/${e.bundle}`, e.bundle) : new Uint8Array(await fetch(`${base}/${e.bundle}`).then((r) => r.arrayBuffer())));
+    return new Engine(device, manifest, shards, bundle && { url: new URL(`${base}/${e.rows}`, self.location.href).href, bundle });
   }
 
-  constructor(device, manifest, shards) {
+  constructor(device, manifest, shards, lazy = null) {
     this.d = device; this.cfg = manifest.config; this.sgm = device.features.has("chromium-experimental-subgroup-matrix"); this.tensors = manifest.tensors; this.shards = shards;
     const c = this.cfg; this.LT = 4096;
     this.linear = c.layer_types.map((k, i) => (k === "linear_attention" ? i : -1)).filter((i) => i >= 0);
@@ -75,10 +85,62 @@ export class Engine {
     this.rope = this.buf(rope.byteLength, U.STORAGE | U.COPY_DST); device.queue.writeBuffer(this.rope, 0, rope);
     this.pipes = new Map(); this.plans = new Map();
     this.errors = []; device.addEventListener("uncapturederror", (e) => this.errors.push(e.error.message));
+    if (lazy) this.initEmbed(manifest.embed, lazy);
+  }
+
+  /**
+   * Lazy embedding (manifest.embed, export_variant.py --lazy-embed): the bundled rows sit in slots 0..R-1 of
+   * per-part buffers with room for `slots` more; any other token's row is fetched by byte range from the full table
+   * on first use. Token ids are mapped to slots before each forward, so the EMBED kernel is unchanged.
+   */
+  initEmbed(e, { url, bundle }) {
+    const R = e.bundled, ids = new Uint32Array(bundle.buffer, bundle.byteOffset, R), rows = bundle.subarray(R * 4);
+    const E = this.emb = { url, cdn: null, e, R, next: R, dyn: [], slot: new Int32Array(e.vocab).fill(-1), bufs: {}, fetched: 0, requests: 0 };
+    let off = 0;
+    for (const [name, bytes] of e.parts) {
+      const part = new Uint8Array(R * bytes);
+      for (let r = 0; r < R; r++) part.set(rows.subarray(r * e.row_bytes + off, r * e.row_bytes + off + bytes), r * bytes);
+      const buf = this.buf((R + e.slots) * bytes, U.STORAGE | U.COPY_DST); this.d.queue.writeBuffer(buf, 0, part);
+      E.bufs[name] = { buf, bytes, off }; off += bytes;
+    }
+    ids.forEach((t, i) => { E.slot[t] = i; });
+  }
+
+  /** Engine row indices for token ids: identity without a lazy embedding, else slots (fetching missing rows). */
+  async embedRows(ids) {
+    const E = this.emb; if (!E) return ids;
+    let need = [...new Set(ids)].filter((t) => E.slot[t] < 0);
+    if (E.next + need.length > E.R + E.e.slots) { for (const t of E.dyn) E.slot[t] = -1; E.dyn = []; E.next = E.R; need = [...new Set(ids)].filter((t) => E.slot[t] < 0); }
+    need.sort((a, b) => a - b);
+    const runs = [];  // ranges of ids, merged across gaps of up to 8 rows (cheaper than another request)
+    for (const t of need) { if (runs.length && t - runs.at(-1)[1] <= 8) runs.at(-1)[1] = t; else runs.push([t, t]); }
+    const want = new Set(need), RB = E.e.row_bytes;
+    await Promise.all(runs.map(async ([a, b]) => {
+      let res;
+      for (let tries = 0; ; tries++) {
+        // Hugging Face redirects each request to a signed CDN URL; reusing it saves a round trip (until it expires).
+        const url = (tries === 0 && E.cdn) || E.url;
+        try {
+          res = await fetch(url, { headers: { Range: `bytes=${a * RB}-${(b + 1) * RB - 1}` } });
+          if (res.status === 206) { if (res.redirected) E.cdn = res.url; break; }
+          throw new Error(`HTTP ${res.status}`);
+        } catch (err) { if (url === E.cdn) E.cdn = null; if (tries === 2) throw new Error(`embedding rows ${a}-${b}: ${err.message}`); }
+      }
+      const data = new Uint8Array(await res.arrayBuffer());
+      for (let t = a; t <= b; t++) {
+        if (!want.has(t)) continue;
+        const s = E.next++; E.slot[t] = s; E.dyn.push(t);
+        for (const { buf, bytes, off } of Object.values(E.bufs)) this.d.queue.writeBuffer(buf, s * bytes, data, (t - a) * RB + off, bytes);
+      }
+      E.requests++;
+    }));
+    E.fetched += need.length;
+    return ids.map((t) => E.slot[t]);
   }
 
   /** Binding resource for a named weight tensor (a range of one shard buffer). */
   w(name) {
+    const lz = this.emb?.bufs[name]; if (lz) return { buffer: lz.buf, offset: 0, size: lz.buf.size };
     const t = this.tensors[name]; if (!t) throw new Error(`no tensor ${name}`);
     const s = this.shards.find((s) => t.offset >= s.start && t.offset < s.start + s.bytes);
     return { buffer: s.buf, offset: t.offset - s.start, size: Math.ceil(t.bytes / 4) * 4 };
@@ -104,11 +166,11 @@ export class Engine {
 
   /** Compile the matmul pipelines the tuned table can pick, without blocking the first request. */
   async precompile() {
-    const keys = new Map();
-    for (const M of [8, 16, 32, 48, 64, 80, 96, 128, 160, 256, 512]) { const k = matmulKernel(M, null, this.sgm); keys.set(k.key, k); }
-    await Promise.all([...keys.values()].map(async (k) => {
-      if (this.pipes.has(k.key)) return;
-      this.pipes.set(k.key, await this.d.createComputePipelineAsync({ layout: "auto", compute: { module: this.d.createShaderModule({ code: k.code() }), entryPoint: "main" } }));
+    const keys = new Map(), fmts = new Map(Object.entries(this.tensors).filter(([n]) => n.endsWith(".q") && n !== "embed.q").map(([, t]) => [W.fmtKey(fmtOf(t)), fmtOf(t)]));
+    for (const M of [8, 16, 32, 48, 64, 80, 96, 128, 160, 256, 512]) for (const [fk, f] of fmts) { const k = matmulKernel(M, null, this.sgm); keys.set(k.key + fk, () => k.code(f)); }
+    await Promise.all([...keys].map(async ([key, code]) => {
+      if (this.pipes.has(key)) return;
+      this.pipes.set(key, await this.d.createComputePipelineAsync({ layout: "auto", compute: { module: this.d.createShaderModule({ code: code() }), entryPoint: "main" } }));
     }));
   }
 
@@ -118,7 +180,7 @@ export class Engine {
     if (this.plans.has(pk)) return this.plans.get(pk);
     const c = this.cfg, D = c.hidden_size, I = c.intermediate_size, H = c.linear_num_key_heads, DK = c.linear_key_head_dim, DV = c.linear_value_head_dim;
     const HQ = c.num_attention_heads, HK = c.num_key_value_heads, HD = c.head_dim, RD = c.rotary_dim, eps = c.rms_norm_eps;
-    const inN = this.tensors["layers.0.in_proj.q"].N, qkvN = this.tensors["layers.3.qkv.q"].N;
+    const inN = this.tensors[`layers.${this.linear[0]}.in_proj.q`].N, qkvN = this.tensors[`layers.${this.full[0]}.qkv.q`].N;
     const maxN = Math.max(2 * I, inN, qkvN);
     const cap = L <= 128 ? 128 : 2 ** Math.ceil(Math.log2(L));   // activations sized for a bucket, shared by all L in it
     const B = this.pool(cap, (L) => ({
@@ -138,20 +200,30 @@ export class Engine {
     const step = (key, code, entries, groups, label) => { const p = this.pipe(key, code); steps.push({ p, bg: bind(p, entries), groups, label }); };
     const slice = (buf, bytes) => ({ buffer: buf, offset: 0, size: Math.ceil(bytes / 4) * 4 });
     const matmul = (A, wname, Y, label) => {
-      const q = this.tensors[wname + ".q"], N = q.N, K = q.K, P = this.uniform([L, N, K, K / 32]);
+      const q = this.tensors[wname + ".q"], N = q.N, K = q.K, P = this.uniform([L, N, K, K / 32]), f = fmtOf(q);
+      if (q.had) step(`fwht${q.had}`, () => W.FWHT(q.had), { 0: slice(A, L * K * 2) }, [L * K / q.had, 1, 1], label + "/had");  // A is not read again
       const e = { 0: slice(A, L * K * 2), 1: this.w(wname + ".q"), 2: this.w(wname + ".s"), 3: slice(Y, L * N * 2), 4: P };
       if (mk.SK > 1) e[5] = B.part;
-      step(mk.key, mk.code, e, mk.groups(L, N), label);
+      if (f.asym) e[6] = this.w(wname + ".b");
+      step(mk.key + W.fmtKey(f), () => mk.code(f), e, mk.groups(L, N), label);
       if (mk.SK > 1) step(`reduce${mk.SK}`, () => W.REDUCE(mk.SK), { 3: slice(Y, L * N * 2), 4: P, 5: B.part }, [Math.ceil((L * N) / 256), 1, 1], label + "/reduce");
       return N;
     };
     const addNorm = (add, wname, label) => step(`addnorm${add}`, () => W.ADD_NORM(D, add), { 0: B.x, 1: B.y, 2: this.w(wname), 3: B.h, 4: B.rowsAll }, [L, 1, 1], label);
     void eps;
 
-    step("embed", () => W.EMBED(D), { 0: B.ids, 1: this.w("embed.q"), 2: this.w("embed.s"), 3: B.x }, [L, 1, 1], "embed");
+    const ef = fmtOf(this.tensors["embed.q"]), ee = { 0: B.ids, 1: this.w("embed.q"), 2: this.w("embed.s"), 3: B.x };
+    if (ef.asym) ee[4] = this.w("embed.b");
+    step("embed" + W.fmtKey(ef), () => W.EMBED(D, ef), ee, [L, 1, 1], "embed");
     c.layer_types.forEach((kind, i) => {
       const P = `layers.${i}.`;
       addNorm(i > 0, P + "in_norm", `L${i}/in_norm`);
+      if (kind === "adapter") {  // linear stand-in for removed layers: x += proj(rms_norm(x)) + bias
+        matmul(B.h, P + "proj", B.y, `L${i}/proj`);
+        const n = L * D, gx = Math.min(Math.ceil(n / 256), 32768);
+        step(`bias${D}`, () => W.ADD_BIAS(D), { 0: slice(B.y, n * 2), 1: this.w(P + "bias") }, [gx, Math.ceil(Math.ceil(n / 256) / gx), 1], `L${i}/bias`);
+        return;
+      }
       if (kind === "linear_attention") {
         const N = matmul(B.h, P + "in_proj", B.big, `L${i}/in_proj`);
         const CC = 2 * H * DK + H * DV;
@@ -184,7 +256,7 @@ export class Engine {
   /** Per-step GPU time (one compute pass per dispatch, timestamped). Diagnostics only. */
   async profile(ids, force = null) {
     const L = ids.length, plan = this.plan(L, force), { B } = plan;
-    this.d.queue.writeBuffer(B.ids, 0, Uint32Array.from(ids));
+    this.d.queue.writeBuffer(B.ids, 0, Uint32Array.from(await this.embedRows(ids)));
     const n = plan.steps.length, qs = this.d.createQuerySet({ type: "timestamp", count: 2 * n });
     const enc = this.d.createCommandEncoder();
     plan.steps.forEach((s, i) => {
@@ -208,7 +280,9 @@ export class Engine {
     const P = cache ? cache.P : 0;
     if (P + L > this.LT) throw new Error(`context ${P + L} exceeds ${this.LT}`);
     rows ??= Array.from({ length: L }, (_, i) => i);
-    this.d.queue.writeBuffer(B.ids, 0, Uint32Array.from(ids));
+    const tf = performance.now();
+    this.d.queue.writeBuffer(B.ids, 0, Uint32Array.from(await this.embedRows(ids)));
+    const fetchMs = performance.now() - tf;
     this.d.queue.writeBuffer(B.rowsOut, 0, Uint32Array.from(rows.length ? rows : [0]));
     this.d.queue.writeBuffer(this.work.Lu, 0, new Uint32Array([L, P, this.LT, cache ? 1 : 0]));
     const enc = this.d.createCommandEncoder();
@@ -253,7 +327,9 @@ export class Engine {
     }
     this.d.queue.submit([enc.finish()]);
     await rb.mapAsync(GPUMapMode.READ); const out = new Float32Array(rb.getMappedRange().slice(0, outBytes)); rb.unmap(); rb.destroy();
-    const res = { hidden: out, d: D, kernel: plan.kernel, cache: snap };
+    const c = this.cfg.unrotate;  // rotated torso: final_norm is 1, and the original basis is c * FWHT(row)
+    if (c) for (let r = 0; r < rows.length; r++) { fwht(out, r * D, D); for (let j = 0; j < D; j++) out[r * D + j] *= c[j]; }
+    const res = { hidden: out, d: D, kernel: plan.kernel, cache: snap, fetch_ms: fetchMs };
     if (tsb) { await tsb.mapAsync(GPUMapMode.READ); const [a, b] = new BigUint64Array(tsb.getMappedRange()); tsb.unmap(); res.gpu_ms = Number(b - a) / 1e6; }
     if (debugLayers) {
       res.layers = [];

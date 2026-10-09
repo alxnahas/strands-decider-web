@@ -4,14 +4,17 @@ import { Engine } from "./engine.js";
 const out = document.getElementById("out"); const log = (s) => { out.textContent += "\n" + s; console.log(s); };
 (async () => {
   const t0 = performance.now();
-  const eng = await Engine.create("/engine-weights"); window.eng = eng;
+  const A = new URLSearchParams(location.search).get("assets");  // an exported variant dir, else the default weights
+  const WB = A ? `${A}engine-weights` : "/engine-weights", MB = A ? `${A}model` : "/model";
+  const eng = await Engine.create(WB); window.eng = eng;
   log(`load ${(performance.now() - t0).toFixed(0)} ms`);
-  const meta = await fetch("/engine-weights/ref/meta.json").then((r) => r.json());
-  const ref = async (n) => new Float32Array(await fetch(`/engine-weights/ref/${n}.f32`).then((r) => r.arrayBuffer()));
+  const meta = await fetch(`${WB}/ref/meta.json`).then((r) => r.json());
+  const ref = async (n) => new Float32Array(await fetch(`${WB}/ref/${n}.f32`).then((r) => r.arrayBuffer()));
   const rel = (a, b) => { let e = 0, m = 0; for (let i = 0; i < b.length; i++) { e = Math.max(e, Math.abs(a[i] - b[i])); m = Math.max(m, Math.abs(b[i])); } return e / m; };
   const r = await eng.forward(meta.ids, null, { debugLayers: true });
   for (const [i, x] of r.layers.entries()) log(`layer${i} rel_err ${rel(x, await ref(`layer${i}`)).toExponential(2)}`);
   log(`final rel_err ${rel(r.hidden, await ref("final")).toExponential(2)}`);
+  if (eng.emb) log(`lazy embedding: ${eng.emb.R} rows bundled, ${eng.emb.fetched} fetched in ${eng.emb.requests} requests`);
   // prefix cache: prefix(k tokens) + suffix(rest) must equal one full forward
   for (const k of [1, 21, 40, 67]) {
     const pre = await eng.forward(meta.ids.slice(0, k), [], { keepCache: true });
@@ -22,14 +25,14 @@ const out = document.getElementById("out"); const log = (s) => { out.textContent
     pre.cache.release();
   }
   const { loadHead, pointerLogits } = await import("../js/head.js");
-  const cfg = await fetch("/model/hobson_config.json").then((r) => r.json());
-  const head = loadHead(await fetch("/model/head.safetensors").then((r) => r.arrayBuffer()));
+  const cfg = await fetch(`${MB}/hobson_config.json`).then((r) => r.json());
+  const head = loadHead(await fetch(`${MB}/head.safetensors`).then((r) => r.arrayBuffer()));
   const L = meta.ids.length, rows = [...meta.opt_idx, L - 1];
   const decide = (h) => pointerLogits(head, h, 2048, rows.length - 1, meta.opt_idx.map((_, i) => i), cfg.temperature_by_kind.choice).probs.map((p) => +p.toFixed(4));
   const ms = [];
   for (let i = 0; i < 8; i++) { const t = performance.now(); const r2 = await eng.forward(meta.ids, rows, { timestamps: true }); ms.push([+(performance.now() - t).toFixed(1), +r2.gpu_ms.toFixed(1)]); if (i == 7) log(`probs ${JSON.stringify(decide(r2.hidden))} kernel ${r2.kernel}`); }
   log(`L=${L} wall/gpu ms ${JSON.stringify(ms)}`);
-  for (const n of [1, 8, 16, 32, 48, 64, 68, 80, 96, 128, 160, 256, 512, 2048]) {
+  for (const n of (new URLSearchParams(location.search).get("lens") || "1,8,16,32,48,64,68,80,96,128,160,256,512,2048").split(",").map(Number)) {
     const ids = Array.from({ length: n }, (_, i) => meta.ids[i % L]); const t = [];
     for (let i = 0; i < 4; i++) { const s = performance.now(); const r3 = await eng.forward(ids, [n - 1], { timestamps: true }); t.push([+(performance.now() - s).toFixed(1), +r3.gpu_ms.toFixed(1)]); }
     log(`len ${n}: ${JSON.stringify(t.slice(1))}`);

@@ -5,7 +5,7 @@ with a LoRA and a pointer head) running entirely on your GPU in Chrome. No infer
 weights download once, are cached in the browser's private storage (OPFS), and every decision runs locally on WebGPU.
 
 **Live demo:** see the GitHub Pages link in the repository sidebar. It needs Chrome or Edge with WebGPU, and the
-first visit downloads about 1 GB.
+first visit downloads about 540 MB (a compressed build of v21, [below](#the-hosted-build)).
 
 Two backends:
 
@@ -56,6 +56,26 @@ slower: 91 ms for the example above and 2.9 s at 2,048 tokens. The local demo pi
 It was checked layer by layer against a fake-quantized fp32 PyTorch run (`web/public/engine/test.html`): every
 layer is within 1.6% max relative error.
 
+### The hosted build
+
+The hosted demo runs an unofficial compressed build of
+[strands-decider-2B-hobson-v21](https://huggingface.co/StrandsAgents/strands-decider-2B-hobson-v21) (weights and
+model card: [alxnahas/strands-decider-v21-webgpu](https://huggingface.co/alxnahas/strands-decider-v21-webgpu)).
+The engine reads its format from `manifest.json`:
+
+- Decoder layers 14 to 22 are replaced by one trained linear block (layer kind `adapter`).
+- The residual stream is Hadamard-rotated and the linears are GPTQ int4; `config.unrotate` takes the final hidden
+  state back to the head's basis.
+- The embedding keeps the full 248k-token vocabulary at int3, but the download holds only the 32k most common rows
+  (`embed_bundle.bin`). The engine fetches any other row from `embed_rows.bin` with an HTTP range request the first
+  time a prompt uses it, and maps token ids to slots in a GPU table, so the embedding kernel is unchanged. The demo
+  prefetches its examples' rows after loading and shows fetch time apart from the forward pass.
+
+The download is about 540 MB. On JevBench's 231 public tasks the build scores 176, the same as v21 in bfloat16 (v21
+in the int4 format above: 163). On 48 of those tasks translated into zh, ja, ko, ar, hi, uk, de and pl, it is within
+3 of v21's count in every language. GPU time per forward on the M4 Pro: 29 ms at 68 tokens, 162 ms at 512, 650 ms at
+2,048. The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
+
 ## Run locally
 
 ```bash
@@ -83,15 +103,22 @@ cd web && node build-pages.mjs --out ../dist --assets https://huggingface.co/<us
 hf upload <user>/<repo> ../dist/assets . --repo-type model
 ```
 
+`--from <dir>` takes the assets from an export directory instead (`model/`, `engine-weights/`, and optionally a
+`README.md` and `LICENSE.md` for the repo), as for the hosted build.
+
 Set the repository variable `DECIDER_ASSETS` to that `resolve/main/` URL. The `pages` workflow then builds and
-deploys the site on every push to `main`. `test/pages.spec.mjs` checks the same setup locally: the site on a
-subpath with no custom headers, the weights from a second origin, in stock Chrome.
+deploys the site on every push to `main`. The browser cache is keyed by the assets URL and a fingerprint of the
+manifest, so new weights never load stale cached shards; older entries are deleted after a successful load.
+`test/pages.spec.mjs` checks the same setup locally: the site on a subpath with no custom headers, the weights from a
+second origin with byte ranges, in stock Chrome (`PAGES_FROM=<export dir>` builds it with `--from`).
 
 ## Credits and license
 
-- Model: [StrandsAgents/strands-decider-2B-hobson-v19](https://huggingface.co/StrandsAgents/strands-decider-2B-hobson-v19)
-  (Apache-2.0), on [Qwen/Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base) (Apache-2.0). The converted
-  weights keep that license.
+- Model:
+  [StrandsAgents/strands-decider-2B-hobson-v19](https://huggingface.co/StrandsAgents/strands-decider-2B-hobson-v19)
+  and [v21](https://huggingface.co/StrandsAgents/strands-decider-2B-hobson-v21) (Apache-2.0), on
+  [Qwen/Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base) (Apache-2.0). The converted weights keep that
+  license.
 - [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) (MIT) and
   [@huggingface/tokenizers](https://github.com/huggingface/tokenizers) (Apache-2.0).
 - This repository: Apache-2.0 (`LICENSE`).

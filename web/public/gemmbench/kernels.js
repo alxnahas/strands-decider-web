@@ -1,13 +1,48 @@
-// Hand-written int4 (MatMulNBits layout) GEMM kernels for small M.
-// B: u32[N][K/32][4] (8 nibbles/word, element e at bits 4*(e%8), zero point 8), S: f16[N][K/32], A: f16[M][K], Y: f16[M][N].
+// Hand-written low-bit GEMM kernels for small M. A: f16[M][K], Y: f16[M][N].
+// Weights are blocks of 32 consecutive K values of one output row (see FORMATS); the default is int4 in the
+// MatMulNBits layout: B u32[N][K/32][4] (element e at bits 4*(e%8) of word e/8, zero point 8), S f16[N][K/32].
 
-export function kernelV1({ C = 16, S = 8, MT = 8 } = {}) {
+/**
+ * Weight formats. A block takes `bits` u32 words:
+ *   4 bits: element e at bits 4(e%8) of word e/8 (MatMulNBits)
+ *   2 bits: element e at bits 2(e%16) of word e/16
+ *   3 bits: words 0-1 hold the low two bits as in the 2-bit layout; bit e of word 2 is element e's high bit
+ * One fp16 scale per `group` (32 or 64) values. Symmetric: w = (q - 2^(bits-1)) * scale. Asymmetric:
+ * w = q * scale + bias, with a per-group fp16 bias at binding 6.
+ */
+export const INT4 = { bits: 4, group: 32, asym: false };
+export const fmtKey = (f) => (f.bits === 4 && f.group === 32 && !f.asym ? "" : `_${f.bits}g${f.group}${f.asym ? "a" : ""}`);
+
+function weightBindings(f) {
+  return `@group(0) @binding(1) var<storage, read> B: array<${{ 4: "vec4<u32>", 3: "u32", 2: "vec2<u32>" }[f.bits]}>;
+@group(0) @binding(2) var<storage, read> Sc: array<f16>;
+${f.asym ? "@group(0) @binding(6) var<storage, read> Bi: array<f16>;" : ""}`;
+}
+
+/** WGSL statements dequantising block `blk` (a u32 expression): put(i, v) receives elements 4i..4i+3 as vec4<T>. */
+function decodeBlock(f, T, blk, put) {
+  const out = [f.bits === 3 ? `let w0 = B[(${blk}) * 3u]; let w1 = B[(${blk}) * 3u + 1u]; let w2 = B[(${blk}) * 3u + 2u];` : `let wv = B[${blk}];`];
+  const word = (i) => (f.bits === 3 ? `w${i}` : `wv[${i}]`);
+  const g = f.group === 32 ? blk : `(${blk}) / ${f.group / 32}u`;
+  out.push(`let sc = ${T}(Sc[${g}]);`);
+  if (f.asym) out.push(`let bi = vec4<${T}>(${T}(Bi[${g}]));`);
+  const u4 = (a) => `vec4<u32>(${a.map((x) => `${x}u`).join(", ")})`;
+  for (let i = 0; i < 8; i++) {
+    const e = 4 * i;
+    let q = f.bits === 4 ? `(vec4<u32>(${word(e >> 3)} >> ${4 * (e & 7)}u) >> ${u4([0, 4, 8, 12])}) & vec4<u32>(15u)`
+      : `(vec4<u32>(${word(e >> 4)} >> ${2 * (e & 15)}u) >> ${u4([0, 2, 4, 6])}) & vec4<u32>(3u)`;
+    if (f.bits === 3) q = `(${q}) | (((vec4<u32>(w2 >> ${e}u) >> ${u4([0, 1, 2, 3])}) & vec4<u32>(1u)) << vec4<u32>(2u))`;
+    out.push(put(i, f.asym ? `fma(vec4<${T}>(${q}), vec4<${T}>(sc), bi)` : `(vec4<${T}>(${q}) - ${T}(${2 ** (f.bits - 1)})) * sc`));
+  }
+  return out.join("\n");
+}
+
+export function kernelV1({ C = 16, S = 8, MT = 8, fmt = INT4 } = {}) {
   return /* wgsl */ `
 enable f16;
 struct P { M: u32, N: u32, K: u32, blocks: u32 };
 @group(0) @binding(0) var<storage, read> A: array<vec4<f16>>;
-@group(0) @binding(1) var<storage, read> B: array<vec4<u32>>;
-@group(0) @binding(2) var<storage, read> Sc: array<f16>;
+${weightBindings(fmt)}
 @group(0) @binding(3) var<storage, read_write> Y: array<f16>;
 @group(0) @binding(4) var<uniform> p: P;
 const C = ${C}u; const S = ${S}u; const MT = ${MT}u;
@@ -19,20 +54,14 @@ fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec
   var acc: array<f32, MT>;
   if (n < p.N) {
     for (var b = s; b < p.blocks; b += S) {
-      let w = B[n * p.blocks + b];
-      let sc = f32(Sc[n * p.blocks + b]);
-      for (var j = 0u; j < 4u; j++) {
-        let bytes = unpack4xU8(w[j]);
-        let lo = vec4<f32>(bytes & vec4<u32>(15u)) - 8.0;
-        let hi = vec4<f32>(bytes >> vec4<u32>(4u)) - 8.0;
-        let w0 = vec4<f32>(lo.x, hi.x, lo.y, hi.y) * sc;
-        let w1 = vec4<f32>(lo.z, hi.z, lo.w, hi.w) * sc;
-        let k4 = (b * 32u + j * 8u) / 4u;
-        for (var m = 0u; m < MT; m++) {
-          if (m0 + m < p.M) {
-            let base = (m0 + m) * (p.K / 4u) + k4;
-            acc[m] += dot(vec4<f32>(A[base]), w0) + dot(vec4<f32>(A[base + 1u]), w1);
-          }
+      var wq: array<vec4<f32>, 8>;
+      ${decodeBlock(fmt, "f32", "n * p.blocks + b", (i, v) => `wq[${i}] = ${v};`)}
+      for (var m = 0u; m < MT; m++) {
+        if (m0 + m < p.M) {
+          let base = (m0 + m) * (p.K / 4u) + b * 8u;
+          var t = 0.0;
+          for (var i = 0u; i < 8u; i++) { t += dot(vec4<f32>(A[base + i]), wq[i]); }
+          acc[m] += t;
         }
       }
     }
@@ -257,7 +286,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
  * 16-byte block (vec4<u32>), and KB consecutive threads read one column's KB consecutive blocks (contiguous in
  * the MatMulNBits layout). Single-buffered (two barriers per stage) to fit 32 KB of workgroup memory.
  */
-export function kernelV4({ TM = 32, SK = 4, KB = 4 } = {}) {
+export function kernelV4({ TM = 32, SK = 4, KB = 4, fmt = INT4 } = {}) {
   const TN = 64, I = TM / 16, J = 4, KS = 32 * KB;
   const acc = [], mma = [], st = [];
   for (let i = 0; i < I; i++) for (let j = 0; j < J; j++) {
@@ -274,8 +303,7 @@ enable subgroups;
 enable chromium_experimental_subgroup_matrix;
 struct P { M: u32, N: u32, K: u32, blocks: u32 };
 @group(0) @binding(0) var<storage, read> A: array<vec4<f16>>;
-@group(0) @binding(1) var<storage, read> B: array<vec4<u32>>;
-@group(0) @binding(2) var<storage, read> Sc: array<f16>;
+${weightBindings(fmt)}
 @group(0) @binding(3) var<storage, read_write> Y: array<f16>;
 @group(0) @binding(4) var<uniform> p: P;
 ${SK > 1 ? "@group(0) @binding(5) var<storage, read_write> part: array<f16>;" : ""}
@@ -300,18 +328,11 @@ fn main(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec
       let o = r * KS + q * 4u;
       stA[o] = v.x; stA[o + 1u] = v.y; stA[o + 2u] = v.z; stA[o + 3u] = v.w;
     }
-    for (var u = 0u; u < ${TN * KB / 128}u; u++) {                // B: 64 cols x KB blocks, one 16 B block per thread
+    for (var u = 0u; u < ${TN * KB / 128}u; u++) {                // B: 64 cols x KB blocks, one block per thread
       let idx = li + 128u * u; let c = idx / KB; let kb = idx % KB;
       let blk = (n0 + c) * p.blocks + b0 + kb;
-      let w = B[blk]; let sc = Sc[blk];
-      for (var j = 0u; j < 4u; j++) {
-        let bytes = unpack4xU8(w[j]);
-        let lo = (vec4<f16>(bytes & vec4<u32>(15u)) - 8.0h) * sc;
-        let hi = (vec4<f16>(bytes >> vec4<u32>(4u)) - 8.0h) * sc;
-        let o = c * KS + kb * 32u + j * 8u;
-        stB[o] = lo.x; stB[o + 1u] = hi.x; stB[o + 2u] = lo.y; stB[o + 3u] = hi.y;
-        stB[o + 4u] = lo.z; stB[o + 5u] = hi.z; stB[o + 6u] = lo.w; stB[o + 7u] = hi.w;
-      }
+      let o = c * KS + kb * 32u;
+      ${decodeBlock(fmt, "f16", "blk", (i, v) => `{ let v = ${v}; stB[o + ${4 * i}u] = v.x; stB[o + ${4 * i + 1}u] = v.y; stB[o + ${4 * i + 2}u] = v.z; stB[o + ${4 * i + 3}u] = v.w; }`)}
     }
     workgroupBarrier();
     for (var kk = 0u; kk < KS; kk += 8u) {

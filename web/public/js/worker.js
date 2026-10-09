@@ -24,13 +24,18 @@ function storeState(key, cache) {
   stateCache.set(key, cache);
   while (stateCache.size > 4) { const [k, c] = stateCache.entries().next().value; c.release(); stateCache.delete(k); }
 }
-const MODEL_REV = `v19-bb282d7-${VARIANT}-ortgenai0.17.1`;  // bump to invalidate the asset cache
+const MODEL_REV = QS.get("rev") || `v19-bb282d7-${VARIANT}-ortgenai0.17.1`;  // bump to invalidate the asset cache
+// Cache entries are keyed by MODEL_REV, a fingerprint of the assets base, decider config and weights manifest (set in
+// init, so new weights get fresh entries even at the same URL), and the asset path (not the signed CDN URL a request
+// may redirect to). Entries under any other prefix are removed after a load.
+const fnv = (s) => { let h = 0x811c9dc5; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0; return h.toString(16).padStart(8, "0"); };
+let cachePrefix;
 let session, tokenizer, head, cfg, runtime;
 const post = (type, data) => self.postMessage({ type, ...data });
 
 async function fetchCached(url, label) {
   // OPFS: streamed to disk once, read back on later loads. Cache Storage refused a 1 GB put.
-  const name = `${MODEL_REV}__${url.replace(ASSETS.href, "").replaceAll("/", "_")}`;  // keyed by asset path, not host
+  const name = cachePrefix + url.replace(ASSETS.href, "").replaceAll("/", "_");
   let root = null;
   if (!QS.get("nocache")) try { root = await self.navigator.storage.getDirectory(); } catch {}
   if (root) {
@@ -64,6 +69,13 @@ async function fetchCached(url, label) {
   post("progress", { label, got, total, cached: false });
   return { buf, hit: false };
 }
+async function pruneCache() {
+  if (QS.get("nocache")) return;
+  try {
+    const root = await self.navigator.storage.getDirectory();
+    for await (const name of root.keys()) if (!name.startsWith(cachePrefix)) await root.removeEntry(name);
+  } catch (e) { post("status", { msg: `OPFS cleanup failed: ${e}` }); }
+}
 
 async function init({ device = "webgpu" }) {
   const t0 = performance.now(), timings = {};
@@ -73,10 +85,14 @@ async function init({ device = "webgpu" }) {
   post("status", { msg: `runtime: ${runtime}${gpu ? "" : " (navigator.gpu unavailable)"}`, runtime, adapterInfo });
 
   let t = performance.now();
-  const [tj, tc, cj, hb] = await Promise.all([
+  const text = (p) => fetch(asset(p)).then((r) => (r.ok ? r.text() : ""));
+  const [cjText, manifestText] = await Promise.all([text("model/hobson_config.json"), text(BACKEND === "engine" ? "engine-weights/manifest.json" : `model/onnx/${VARIANT}-web/manifest.json`)]);
+  cachePrefix = `${MODEL_REV}__${fnv(ASSETS.href + cjText + manifestText)}__`;
+  const [tj, tc, hb] = await Promise.all([
     fetch(asset("model/tokenizer.json")).then((r) => r.json()), fetch(asset("model/tokenizer_config.json")).then((r) => r.json()),
-    fetch(asset("model/hobson_config.json")).then((r) => r.json()), fetchCached(asset("model/head.safetensors"), "head"),
+    fetchCached(asset("model/head.safetensors"), "head"),
   ]);
+  const cj = JSON.parse(cjText);
   tokenizer = new Tokenizer(tj, tc); cfg = cj; head = loadHead(hb.buf.buffer);
   timings.tokenizer_head_ms = performance.now() - t;
 
@@ -90,6 +106,7 @@ async function init({ device = "webgpu" }) {
     engine.precompile();  // remaining matmul tile pipelines, in the background
     timings.total_load_ms = performance.now() - t0; runtime = "webgpu-engine";
     post("ready", { variant: "engine-int4", runtime, timings, cached: hit, adapterInfo, kernels: engine.sgm ? "subgroup-matrix" : "portable" });
+    pruneCache();
     return;
   }
   ort = await import(`${ORT_DIR}ort.webgpu.min.mjs`);
@@ -119,6 +136,7 @@ async function init({ device = "webgpu" }) {
   timings.session_ms = performance.now() - t;
   timings.total_load_ms = performance.now() - t0;
   post("ready", { variant: VARIANT, runtime, timings, cached: data.hit, adapterInfo, inputs: session.inputNames.length });
+  pruneCache();
 }
 
 function zerosFor(name, L) {
@@ -169,7 +187,8 @@ async function decide({ id, state, question }) {
       : await engine.forward(ids, [...optIdx, ids.length - 1]);
     const t2e = performance.now();
     const { answer, logits } = answerFrom(rq, r.hidden, r.d, optIdx.length, optIdx.map((_, i) => i));
-    post("result", { id, answer, logits, tokens: ids.length, cached_state_tokens: hit ? sLen : 0, timings: { prep_ms: t1 - t0, forward_ms: t2e - t1, total_ms: performance.now() - t0 }, runtime, kernel: r.kernel });
+    // forward_ms excludes fetching embedding rows the bundle lacks (lazy embedding), reported as fetch_ms
+    post("result", { id, answer, logits, tokens: ids.length, cached_state_tokens: hit ? sLen : 0, timings: { prep_ms: t1 - t0, forward_ms: t2e - t1 - r.fetch_ms, fetch_ms: r.fetch_ms, total_ms: performance.now() - t0 }, runtime, kernel: r.kernel });
     return;
   }
   const { hidden, d, cache } = await forward(ids);
@@ -223,6 +242,12 @@ async function handle(data) {
     if (data.type === "init") await init(data);
     else if (data.type === "decide") await decide(data);
     else if (data.type === "decideMany") await decideMany(data);
+    else if (data.type === "prefetch") {  // fetch the embedding rows these requests need (lazy embedding), no forward
+      const ids = data.items.flatMap(({ state, question }) => buildInputs(tokenizer, state, question, cfg.max_length).ids);
+      const before = engine?.emb?.fetched ?? 0;
+      if (engine) await engine.embedRows(ids);
+      post("result", { id: data.id, fetched: (engine?.emb?.fetched ?? 0) - before });
+    }
     else if (data.type === "bench") {  // raw forward latency for n tokens (diagnostics)
       const r = {};
       for (const n of data.lengths) { const ms = []; for (let i = 0; i < 4; i++) { const t = performance.now(); release((await forward(Array(n).fill(198))).cache); ms.push(performance.now() - t); } r[n] = ms.slice(1).map((x) => +x.toFixed(1)); }
