@@ -25,7 +25,7 @@ if (!html.includes(assetsUrl)) throw new Error("demo.html assets meta tag not fo
 fs.mkdirSync(site, { recursive: true });
 fs.writeFileSync(path.join(site, "index.html"), html);
 for (const f of ["decider-client.js", "worker.js", "prompt.js", "head.js"]) copy(path.join(pub, "js", f), path.join(site, "js", f));
-for (const f of ["engine.js", "wgsl.js"]) copy(path.join(pub, "engine", f), path.join(site, "engine", f));
+for (const f of ["engine.js", "wgsl.js", "wire.js"]) copy(path.join(pub, "engine", f), path.join(site, "engine", f));
 copy(path.join(pub, "gemmbench", "kernels.js"), path.join(site, "gemmbench", "kernels.js"));
 copy(path.join(here, "node_modules/@huggingface/tokenizers/dist"), path.join(site, "tokenizers"));
 fs.writeFileSync(path.join(site, ".nojekyll"), "");
@@ -33,10 +33,11 @@ fs.writeFileSync(path.join(site, ".nojekyll"), "");
 // assets/ (skipped in CI, where the weights are not available; they are uploaded once from a local build)
 if (!siteOnly) {
   const model = from ? path.join(from, "model") : path.resolve(here, "../models/decider"), engine = from ? path.join(from, "engine-weights") : path.resolve(here, "../engine");
-  for (const f of ["tokenizer.json", "tokenizer_config.json", "hobson_config.json", "head.safetensors"]) link(path.join(model, f), path.join(assets, "model", f));
+  const manifest = JSON.parse(fs.readFileSync(path.join(engine, "manifest.json"), "utf8"));
+  // a packed export (pack_wire.py) has gzipped shards and tokenizer, named in the manifest
+  for (const f of [manifest.tokenizer || "tokenizer.json", "tokenizer_config.json", "hobson_config.json", "head.safetensors"]) link(path.join(model, f), path.join(assets, "model", f));
   if (!from) link(path.join(model, "LICENSE.md"), path.join(assets, "model", "LICENSE.md"));
   for (const f of from ? ["README.md", "LICENSE.md"] : []) if (fs.existsSync(path.join(from, f))) link(path.join(from, f), path.join(assets, f));
-  const manifest = JSON.parse(fs.readFileSync(path.join(engine, "manifest.json"), "utf8"));
   // a manifest with "embed" ships part of the embedding table up front and fetches the other rows on demand (engine.js)
   const files = ["manifest.json", ...manifest.shards.map((s) => s.path), ...(manifest.embed ? [manifest.embed.bundle, manifest.embed.rows] : [])];
   for (const f of files) link(path.join(engine, f), path.join(assets, "engine-weights", f));

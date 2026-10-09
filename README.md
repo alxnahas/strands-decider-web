@@ -5,7 +5,7 @@ with a LoRA and a pointer head) running entirely on your GPU in Chrome. No infer
 weights download once, are cached in the browser's private storage (OPFS), and every decision runs locally on WebGPU.
 
 **Live demo:** see the GitHub Pages link in the repository sidebar. It needs Chrome or Edge with WebGPU, and the
-first visit downloads about 540 MB (a compressed build of v21, [below](#the-hosted-build)).
+first visit downloads about 470 MB (a compressed build of v21, [below](#the-hosted-build)).
 
 Two backends:
 
@@ -70,11 +70,16 @@ The engine reads its format from `manifest.json`:
   (`embed_bundle.bin`). The engine fetches any other row from `embed_rows.bin` with an HTTP range request the first
   time a prompt uses it, and maps token ids to slots in a GPU table, so the embedding kernel is unchanged. The demo
   prefetches its examples' rows after loading and shows fetch time apart from the forward pass.
+- The download is packed (`engine/wire.js`): every fp16 group scale is an 8-bit code on a per-row log scale, the
+  shard (`weights.0.wire.gz`) holds the tensors back to back, and the shard and tokenizer are gzipped. The engine
+  decompresses with `DecompressionStream` and rebuilds the fp16 layout before uploading, so the kernels are
+  unchanged. The cache keeps the packed bytes; unpacking takes about 0.3 s per load.
 
-The download is about 540 MB. On JevBench's 231 public tasks the build scores 176, the same as v21 in bfloat16 (v21
-in the int4 format above: 163). On 48 of those tasks translated into zh, ja, ko, ar, hi, uk, de and pl, it is within
-3 of v21's count in every language. GPU time per forward on the M4 Pro: 29 ms at 68 tokens, 162 ms at 512, 650 ms at
-2,048. The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
+The download is about 470 MB. Run through this engine in headless Chrome (stock or flagged, same answers), the
+build scores 176 on JevBench's 231 public tasks, the same as v21 in bfloat16 (v21 in the int4 format above: 163).
+On 48 of those tasks translated into zh, ja, ko, ar, hi, uk, de and pl, it is within 3 of v21's count in every
+language. GPU time per forward on the M4 Pro: 29 ms at 68 tokens, 161 ms at 512,
+646 ms at 2,048. The scripts that produce the export (layer removal, GPTQ, export) are not in this repository yet.
 
 ## Run locally
 

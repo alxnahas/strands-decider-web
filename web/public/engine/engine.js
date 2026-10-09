@@ -1,5 +1,6 @@
 // Hand-written WebGPU prefill engine for the Strands Decider torso (Qwen3.5-2B hybrid, 2-4 bit weights).
 import * as W from "./wgsl.js";
+import { decodeScales, unpackShard } from "./wire.js";
 
 const U = GPUBufferUsage;
 
@@ -24,6 +25,12 @@ function matmulKernel(M, force = null, sgm = true) {
 
 /** A matmul weight's format (see gemmbench/kernels.js); manifests without one are int4, block 32, symmetric. */
 const fmtOf = (t) => ({ bits: t.bits ?? 4, group: t.group ?? 32, asym: !!t.asym });
+
+/** Bytes of a file; a .gz one decompressed (Hugging Face serves it as is, without Content-Encoding). */
+async function download(url) {
+  const r = await fetch(url); if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return new Uint8Array(await (url.endsWith(".gz") ? new Response(r.body.pipeThrough(new DecompressionStream("gzip"))) : r).arrayBuffer());
+}
 
 /** In-place fast Walsh-Hadamard transform (Sylvester order) of x[o .. o + n). */
 function fwht(x, o, n) {
@@ -56,12 +63,15 @@ export class Engine {
     const manifest = await fetch(`${base}/manifest.json`).then((r) => r.json());
     const shards = [];
     for (const s of manifest.shards) {
-      const data = fetchShard ? await fetchShard(`${base}/${s.path}`, s.path) : new Uint8Array(await fetch(`${base}/${s.path}`).then((r) => r.arrayBuffer()));
-      const buf = device.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: U.STORAGE | U.COPY_DST });
-      device.queue.writeBuffer(buf, 0, data.buffer, data.byteOffset, data.byteLength);
+      // a packed shard ("wire", pack_wire.py) is rebuilt into the GPU layout here
+      const data = fetchShard ? await fetchShard(`${base}/${s.path}`, s.path, s.wire) : await download(`${base}/${s.path}`);
+      const buf = device.createBuffer({ size: Math.ceil((s.wire ? s.bytes : data.byteLength) / 4) * 4, usage: U.STORAGE | U.COPY_DST });
+      const put = (off, b) => { if (b.byteLength % 4) { const p = new Uint8Array(Math.ceil(b.byteLength / 4) * 4); p.set(b); b = p; }
+        device.queue.writeBuffer(buf, off, b.buffer, b.byteOffset, b.byteLength); };
+      if (s.wire) unpackShard(data, s, manifest.tensors, put); else put(0, data);
       shards.push({ ...s, buf }); onProgress(s.path);
     }
-    const e = manifest.embed, bundle = e && (fetchShard ? await fetchShard(`${base}/${e.bundle}`, e.bundle) : new Uint8Array(await fetch(`${base}/${e.bundle}`).then((r) => r.arrayBuffer())));
+    const e = manifest.embed, bundle = e && (fetchShard ? await fetchShard(`${base}/${e.bundle}`, e.bundle) : await download(`${base}/${e.bundle}`));
     return new Engine(device, manifest, shards, bundle && { url: new URL(`${base}/${e.rows}`, self.location.href).href, bundle });
   }
 
@@ -94,16 +104,28 @@ export class Engine {
    * on first use. Token ids are mapped to slots before each forward, so the EMBED kernel is unchanged.
    */
   initEmbed(e, { url, bundle }) {
-    const R = e.bundled, ids = new Uint32Array(bundle.buffer, bundle.byteOffset, R), rows = bundle.subarray(R * 4);
+    const R = e.bundled, ids = new Uint32Array(bundle.buffer, bundle.byteOffset, R);
     const E = this.emb = { url, cdn: null, e, R, next: R, dyn: [], slot: new Int32Array(e.vocab).fill(-1), bufs: {}, fetched: 0, requests: 0 };
-    let off = 0;
-    for (const [name, bytes] of e.parts) {
-      const part = new Uint8Array(R * bytes);
-      for (let r = 0; r < R; r++) part.set(rows.subarray(r * e.row_bytes + off, r * e.row_bytes + off + bytes), r * bytes);
-      const buf = this.buf((R + e.slots) * bytes, U.STORAGE | U.COPY_DST); this.d.queue.writeBuffer(buf, 0, part);
-      E.bufs[name] = { buf, bytes, off }; off += bytes;
-    }
+    for (const [name, bytes] of e.parts) E.bufs[name] = { buf: this.buf((R + e.slots) * bytes, U.STORAGE | U.COPY_DST), bytes };
+    this.putRows(bundle.subarray(R * 4), 0, R);
     ids.forEach((t, i) => { E.slot[t] = i; });
+  }
+
+  /** n downloaded rows (e.wire_row_bytes each with 8-bit scales if e.u8, else e.row_bytes) into slots s0.. */
+  putRows(data, s0, n) {
+    const e = this.emb.e, RB = e.wire_row_bytes ?? e.row_bytes; let off = 0;
+    for (const [name, bytes] of e.parts) {
+      const part = new Uint8Array(n * bytes);
+      if (e.u8 && name === "embed.s") {
+        const G = bytes / 2, d = new Uint16Array(part.buffer);
+        for (let r = 0; r < n; r++) decodeScales(data, r * RB + off, 1, G, d, r * G);
+        off += 4 + G;
+      } else {
+        for (let r = 0; r < n; r++) part.set(data.subarray(r * RB + off, r * RB + off + bytes), r * bytes);
+        off += bytes;
+      }
+      this.d.queue.writeBuffer(this.emb.bufs[name].buf, s0 * bytes, part);
+    }
   }
 
   /** Engine row indices for token ids: identity without a lazy embedding, else slots (fetching missing rows). */
@@ -114,7 +136,7 @@ export class Engine {
     need.sort((a, b) => a - b);
     const runs = [];  // ranges of ids, merged across gaps of up to 8 rows (cheaper than another request)
     for (const t of need) { if (runs.length && t - runs.at(-1)[1] <= 8) runs.at(-1)[1] = t; else runs.push([t, t]); }
-    const want = new Set(need), RB = E.e.row_bytes;
+    const want = new Set(need), RB = E.e.wire_row_bytes ?? E.e.row_bytes;
     await Promise.all(runs.map(async ([a, b]) => {
       let res;
       for (let tries = 0; ; tries++) {
@@ -126,12 +148,11 @@ export class Engine {
           throw new Error(`HTTP ${res.status}`);
         } catch (err) { if (url === E.cdn) E.cdn = null; if (tries === 2) throw new Error(`embedding rows ${a}-${b}: ${err.message}`); }
       }
-      const data = new Uint8Array(await res.arrayBuffer());
-      for (let t = a; t <= b; t++) {
-        if (!want.has(t)) continue;
-        const s = E.next++; E.slot[t] = s; E.dyn.push(t);
-        for (const { buf, bytes, off } of Object.values(E.bufs)) this.d.queue.writeBuffer(buf, s * bytes, data, (t - a) * RB + off, bytes);
-      }
+      const data = new Uint8Array(await res.arrayBuffer()), keep = [];
+      for (let t = a; t <= b; t++) if (want.has(t)) keep.push(t);
+      const rows = new Uint8Array(keep.length * RB), s0 = E.next; E.next += keep.length;
+      keep.forEach((t, i) => { rows.set(data.subarray((t - a) * RB, (t - a + 1) * RB), i * RB); E.slot[t] = s0 + i; E.dyn.push(t); });
+      this.putRows(rows, s0, keep.length);
       E.requests++;
     }));
     E.fetched += need.length;

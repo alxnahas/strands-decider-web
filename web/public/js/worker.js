@@ -33,8 +33,9 @@ let cachePrefix;
 let session, tokenizer, head, cfg, runtime;
 const post = (type, data) => self.postMessage({ type, ...data });
 
-async function fetchCached(url, label) {
-  // OPFS: streamed to disk once, read back on later loads. Cache Storage refused a 1 GB put.
+async function fetchCached(url, label, size = 0) {
+  // OPFS: streamed to disk once, read back on later loads. Cache Storage refused a 1 GB put. A .gz file (served as
+  // is, no Content-Encoding) is decompressed on the way in and cached decompressed; size, if known, is that length.
   const name = cachePrefix + url.replace(ASSETS.href, "").replaceAll("/", "_");
   let root = null;
   if (!QS.get("nocache")) try { root = await self.navigator.storage.getDirectory(); } catch {}
@@ -51,14 +52,23 @@ async function fetchCached(url, label) {
   }
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const total = +res.headers.get("Content-Length") || 0;
-  const buf = new Uint8Array(total); let got = 0, last = 0;
-  const reader = res.body.getReader();
+  const total = +res.headers.get("Content-Length") || 0, gz = url.endsWith(".gz");
+  let got = 0, last = 0;  // bytes over the network, for progress
+  let body = res.body.pipeThrough(new TransformStream({ transform(c, ctl) {
+    got += c.length; if (got - last > 64 << 20) { last = got; post("progress", { label, got, total }); } ctl.enqueue(c);
+  } }));
+  if (gz) body = body.pipeThrough(new DecompressionStream("gzip"));
+  const len = gz ? size : total, chunks = [];
+  let buf = len ? new Uint8Array(len) : null, n = 0;
+  const reader = body.getReader();
   for (;;) {
     const { done, value } = await reader.read(); if (done) break;
-    buf.set(value, got); got += value.length;
-    if (got - last > 64 << 20) { last = got; post("progress", { label, got, total }); }
+    if (buf && n + value.length > len) { chunks.push(buf.subarray(0, n)); buf = null; }  // Content-Length of an encoded body
+    if (buf) buf.set(value, n); else chunks.push(value);
+    n += value.length;
   }
+  if (!buf) { buf = new Uint8Array(n); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; } }
+  else if (n !== len) throw new Error(`${label}: got ${n} of ${len} bytes`);
   if (root) {
     try {
       const fh = await root.getFileHandle(name + ".tmp", { create: true });
@@ -88,8 +98,11 @@ async function init({ device = "webgpu" }) {
   const text = (p) => fetch(asset(p)).then((r) => (r.ok ? r.text() : ""));
   const [cjText, manifestText] = await Promise.all([text("model/hobson_config.json"), text(BACKEND === "engine" ? "engine-weights/manifest.json" : `model/onnx/${VARIANT}-web/manifest.json`)]);
   cachePrefix = `${MODEL_REV}__${fnv(ASSETS.href + cjText + manifestText)}__`;
+  // an engine manifest may name a compressed tokenizer (pack_wire.py: "tokenizer.json.gz")
+  const tokFile = (BACKEND === "engine" && manifestText && JSON.parse(manifestText).tokenizer) || "tokenizer.json";
   const [tj, tc, hb] = await Promise.all([
-    fetch(asset("model/tokenizer.json")).then((r) => r.json()), fetch(asset("model/tokenizer_config.json")).then((r) => r.json()),
+    fetchCached(asset(`model/${tokFile}`), "tokenizer").then(({ buf }) => JSON.parse(new TextDecoder().decode(buf))),
+    fetch(asset("model/tokenizer_config.json")).then((r) => r.json()),
     fetchCached(asset("model/head.safetensors"), "head"),
   ]);
   const cj = JSON.parse(cjText);
@@ -100,7 +113,7 @@ async function init({ device = "webgpu" }) {
     if (!gpu) throw new Error("engine backend needs WebGPU");
     const { Engine } = await import("../engine/engine.js");
     t = performance.now(); let hit = true;
-    engine = await Engine.create(asset("engine-weights"), { fetchShard: async (url, label) => { const r = await fetchCached(url, label); hit &&= r.hit; return r.buf; } });
+    engine = await Engine.create(asset("engine-weights"), { fetchShard: async (url, label, size) => { const r = await fetchCached(url, label, size); hit &&= r.hit; return r.buf; } });
     timings.fetch_ms = performance.now() - t;
     t = performance.now(); await engine.forward([27, 2374, 29], [2]); timings.session_ms = performance.now() - t;  // compile + warm
     engine.precompile();  // remaining matmul tile pipelines, in the background
